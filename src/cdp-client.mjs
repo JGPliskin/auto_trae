@@ -7,7 +7,10 @@ function requireLoopbackUrl(value, protocol) {
   } catch {
     throw new Error('CDP URL must be a valid 127.0.0.1 URL');
   }
-  if (url.protocol !== protocol || url.hostname !== '127.0.0.1') {
+  const authority = typeof value === 'string'
+    ? /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(value)?.[1]
+    : undefined;
+  if (url.protocol !== protocol || url.hostname !== '127.0.0.1' || !/^127\.0\.0\.1(?::\d+)?$/.test(authority)) {
     throw new Error('CDP URL must use 127.0.0.1');
   }
   return url;

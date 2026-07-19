@@ -49,6 +49,24 @@ test('rejects non-loopback discovery and debugger URLs before socket creation', 
   assert.equal(created, false);
 });
 
+test('rejects normalized alternate loopback host spellings before discovery or socket creation', async () => {
+  for (const host of ['2130706433', '0x7f000001', '127.0.0.1.']) {
+    const discovery = fakeFetch([]);
+    await assert.rejects(
+      discoverTraeTarget({ endpoint: `http://${host}:39240`, fetchImpl: discovery.fetchImpl }),
+      /127\.0\.0\.1/,
+    );
+    assert.equal(discovery.calls.length, 0, `discovery fetch for ${host}`);
+
+    let created = 0;
+    assert.throws(() => createCdpClient({
+      webSocketDebuggerUrl: `ws://${host}:39240/devtools/page/trae`,
+      webSocketFactory: () => { created += 1; },
+    }), /127\.0\.0\.1/);
+    assert.equal(created, 0, `socket creation for ${host}`);
+  }
+});
+
 test('correlates out-of-order responses and rejects only the matching CDP error', async () => {
   const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
   const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
