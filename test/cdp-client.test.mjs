@@ -100,6 +100,22 @@ test('rejects outstanding work on close and a later client can reconnect', async
   assert.deepEqual(await request, { nodes: [] });
 });
 
+test('exposes an awaitable attachment boundary before the first CDP request', async () => {
+  const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
+  let attached = false;
+  const attachment = client.waitUntilOpen().then(() => {
+    attached = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(attached, false);
+
+  socket.open();
+  await attachment;
+  assert.equal(attached, true);
+});
+
 test('uses the thin protocol helpers and a fresh object for the exact click function', async () => {
   const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
   const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });

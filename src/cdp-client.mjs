@@ -110,8 +110,38 @@ export function createCdpClient({
     });
   }
 
+  function waitUntilOpen() {
+    if (closed) return Promise.reject(new Error('CDP socket closed'));
+    if (socket.readyState === socket.OPEN || socket.readyState === 1) return Promise.resolve();
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        socket.removeEventListener('open', handleOpen);
+        socket.removeEventListener('close', handleClose);
+        socket.removeEventListener('error', handleError);
+      };
+      const handleOpen = () => {
+        cleanup();
+        resolve();
+      };
+      const handleClose = () => {
+        cleanup();
+        reject(new Error('CDP socket closed'));
+      };
+      const handleError = () => {
+        cleanup();
+        reject(new Error('CDP socket error'));
+      };
+
+      socket.addEventListener('open', handleOpen);
+      socket.addEventListener('close', handleClose);
+      socket.addEventListener('error', handleError);
+    });
+  }
+
   return {
     request,
+    waitUntilOpen,
     close() {
       closed = true;
       rejectPending(new Error('CDP socket closed'));
