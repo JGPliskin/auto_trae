@@ -23,13 +23,27 @@ function candidate({
     reason: 'candidate_proven',
     sessionKey: 'target-a:session-a',
     candidateKey,
-    prompt: { backendNodeId: promptBackendId, visible: true, signatureMatches: true },
-    continueButton: { backendNodeId: buttonBackendId, visible: true, enabled: true },
+    prompt: {
+      backendNodeId: promptBackendId,
+      role: 'statictext',
+      visible: true,
+      signatureMatches: true,
+    },
+    continueButton: {
+      backendNodeId: buttonBackendId,
+      role: 'button',
+      name: 'Continue',
+      visible: true,
+      enabled: true,
+    },
     region: { backendNodeId: 20, combinedAncestorDistance: 6 },
   };
 }
 
 function none(sessionKey = 'target-a:session-a') {
+  const separator = sessionKey?.indexOf(':') ?? -1;
+  const targetId = separator > 0 ? sessionKey.slice(0, separator) : undefined;
+  const sessionId = separator > 0 ? sessionKey.slice(separator + 1) : undefined;
   return {
     kind: 'none',
     reason: 'no_signature',
@@ -38,6 +52,15 @@ function none(sessionKey = 'target-a:session-a') {
     prompt: undefined,
     continueButton: undefined,
     region: undefined,
+    ...(targetId && sessionId ? {
+      disappearanceProof: {
+        targetId,
+        sessionId,
+        sessionBackendNodeId: 10,
+        visible: true,
+        signatureAbsent: true,
+      },
+    } : {}),
   };
 }
 
@@ -49,6 +72,7 @@ function setup({ clickImpl, discoverImpl, eventImpl, observeImpl, sleepImpl } = 
     discoveries: 0,
     events: [],
     observations: 0,
+    observationArgs: [],
     output: [],
     sleeps: [],
   };
@@ -69,9 +93,10 @@ function setup({ clickImpl, discoverImpl, eventImpl, observeImpl, sleepImpl } = 
       calls.clientCreations += 1;
       return client;
     },
-    async observe() {
+    async observe(args) {
       calls.observations += 1;
-      return observeImpl ? observeImpl(calls.observations) : candidate();
+      calls.observationArgs.push(args);
+      return observeImpl ? observeImpl(calls.observations, args) : candidate();
     },
     async sleep(ms, options) {
       calls.sleeps.push(ms);
@@ -271,6 +296,28 @@ test('session click ledger survives a transport reconnect in the same watcher', 
       .filter(({ event }) => event === 'click_invoked')
       .map(({ continueClicks }) => continueClicks),
     [1, 2],
+  );
+});
+
+test('passes the in-flight session to the observer for production disappearance proof', async () => {
+  const controller = new AbortController();
+  const context = setup({
+    observeImpl: async (call) => {
+      if (call <= 2) return candidate();
+      controller.abort();
+      return none();
+    },
+  });
+
+  await runCli({
+    argv: ['--enable', '--poll-ms', '250'],
+    signal: controller.signal,
+    ...context.dependencies,
+  });
+
+  assert.deepEqual(
+    context.calls.observationArgs.map(({ expectedSessionKey }) => expectedSessionKey),
+    [undefined, undefined, 'target-a:session-a'],
   );
 });
 

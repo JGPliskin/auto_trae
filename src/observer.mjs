@@ -1,4 +1,9 @@
-import { analyzeCandidate, findAxCandidates } from './candidate.mjs';
+import {
+  analyzeCandidate,
+  findAxCandidates,
+  findExpectedSession,
+  proveDisappearance,
+} from './candidate.mjs';
 
 function unsafe(reason) {
   return {
@@ -12,7 +17,7 @@ function unsafe(reason) {
   };
 }
 
-export async function observe({ client, targetId }) {
+export async function observe({ client, targetId, expectedSessionKey }) {
   let axResult;
   try {
     axResult = await client.getFullAXTree();
@@ -23,7 +28,35 @@ export async function observe({ client, targetId }) {
   const axNodes = Array.isArray(axResult?.nodes) ? axResult.nodes : [];
   const { prompts, buttons } = findAxCandidates(axNodes);
   if (prompts.length === 0) {
-    return analyzeCandidate({ targetId, axNodes, domRoot: undefined, boxModels: new Map() });
+    if (expectedSessionKey === undefined) {
+      return analyzeCandidate({ targetId, axNodes, domRoot: undefined, boxModels: new Map() });
+    }
+    if (typeof expectedSessionKey !== 'string'
+      || typeof targetId !== 'string'
+      || !expectedSessionKey.startsWith(`${targetId}:`)) {
+      return unsafe('verification_target_mismatch');
+    }
+
+    let documentResult;
+    try {
+      documentResult = await client.getDocument();
+    } catch {
+      return unsafe('dom_unavailable');
+    }
+    const session = findExpectedSession({
+      targetId,
+      expectedSessionKey,
+      domRoot: documentResult?.root,
+    });
+    if (session.kind !== 'session') return unsafe(session.reason);
+
+    let boxModel;
+    try {
+      boxModel = await client.getBoxModel({ backendNodeId: session.sessionBackendNodeId });
+    } catch {
+      return unsafe('box_model_unavailable');
+    }
+    return proveDisappearance({ session, boxModel });
   }
 
   const relevantNodes = [...prompts, ...buttons];

@@ -134,7 +134,7 @@ export async function runCli({
         } else {
           stage = 'connection';
           client = createCdpClient({ webSocketDebuggerUrl: target.webSocketDebuggerUrl });
-          const attachment = await waitForAbort(client.waitUntilOpen?.(), signal);
+          const attachment = await waitForAbort(client.waitUntilOpen?.({ signal }), signal);
           if (attachment === ABORTED || signal?.aborted) break;
           const connectedLog = await waitForAbort(
             eventLogger.event({
@@ -147,7 +147,11 @@ export async function runCli({
           if (connectedLog === ABORTED || signal?.aborted) break;
           reconnectAttempt = 0;
           do {
-            const observation = await waitForAbort(observe({ client, targetId: target.id }), signal);
+            const observation = await waitForAbort(observe({
+              client,
+              targetId: target.id,
+              expectedSessionKey: watcher.verificationSessionKey,
+            }), signal);
             if (observation === ABORTED || signal?.aborted) break;
             await watcher.processObservation(observation);
             if (observation?.kind === 'unsafe' && observation.reason === 'ax_unavailable') {

@@ -1,4 +1,5 @@
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
 
 function requireLoopbackUrl(value, protocol) {
   let url;
@@ -43,10 +44,14 @@ export function createCdpClient({
   webSocketDebuggerUrl,
   webSocketFactory = (url) => new WebSocket(url),
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  openTimeoutMs = DEFAULT_OPEN_TIMEOUT_MS,
 }) {
   requireLoopbackUrl(webSocketDebuggerUrl, 'ws:');
   if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
     throw new Error('CDP request timeout must be positive');
+  }
+  if (!Number.isFinite(openTimeoutMs) || openTimeoutMs <= 0) {
+    throw new Error('CDP attachment timeout must be positive');
   }
 
   const socket = webSocketFactory(webSocketDebuggerUrl);
@@ -110,32 +115,43 @@ export function createCdpClient({
     });
   }
 
-  function waitUntilOpen() {
+  function waitUntilOpen({ signal } = {}) {
     if (closed) return Promise.reject(new Error('CDP socket closed'));
+    if (signal?.aborted) return Promise.reject(new Error('CDP socket attachment aborted'));
     if (socket.readyState === socket.OPEN || socket.readyState === 1) return Promise.resolve();
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer;
       const cleanup = () => {
+        clearTimeout(timer);
         socket.removeEventListener('open', handleOpen);
         socket.removeEventListener('close', handleClose);
         socket.removeEventListener('error', handleError);
+        signal?.removeEventListener('abort', handleAbort);
       };
-      const handleOpen = () => {
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
         cleanup();
-        resolve();
+        callback(value);
       };
-      const handleClose = () => {
-        cleanup();
-        reject(new Error('CDP socket closed'));
-      };
-      const handleError = () => {
-        cleanup();
-        reject(new Error('CDP socket error'));
-      };
+      const handleOpen = () => finish(resolve);
+      const handleClose = () => finish(reject, new Error('CDP socket closed'));
+      const handleError = () => finish(reject, new Error('CDP socket error'));
+      const handleAbort = () => finish(reject, new Error('CDP socket attachment aborted'));
 
       socket.addEventListener('open', handleOpen);
       socket.addEventListener('close', handleClose);
       socket.addEventListener('error', handleError);
+      signal?.addEventListener('abort', handleAbort, { once: true });
+      timer = setTimeout(() => {
+        finish(reject, new Error('CDP socket attachment timeout'));
+      }, openTimeoutMs);
+
+      if (signal?.aborted) handleAbort();
+      else if (closed) handleClose();
+      else if (socket.readyState === socket.OPEN || socket.readyState === 1) handleOpen();
     });
   }
 
@@ -164,10 +180,18 @@ export function createCdpClient({
     },
     async click({ backendNodeId }) {
       const result = await request('DOM.resolveNode', { backendNodeId });
-      return request('Runtime.callFunctionOn', {
-        objectId: result.object.objectId,
+      const objectId = result?.object?.objectId;
+      if (typeof objectId !== 'string' || objectId.length === 0) {
+        throw new Error('CDP node resolution missing objectId');
+      }
+      const invocation = await request('Runtime.callFunctionOn', {
+        objectId,
         functionDeclaration: 'function () { this.click(); }',
       });
+      if (invocation?.exceptionDetails) {
+        throw new Error('CDP click invocation failed');
+      }
+      return invocation;
     },
   };
 }

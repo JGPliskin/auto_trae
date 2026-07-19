@@ -1,19 +1,10 @@
+import {
+  isProvenDisappearanceObservation,
+  isSafeCandidateObservation,
+} from './candidate.mjs';
+
 const VERIFICATION_WINDOW_MS = 30_000;
 const CONTINUATION_SIGNATURE = 'continuation_signature';
-
-function isSafeCandidate(observation) {
-  return observation?.kind === 'candidate'
-    && typeof observation.sessionKey === 'string'
-    && observation.sessionKey.length > 0
-    && typeof observation.candidateKey === 'string'
-    && observation.candidateKey.length > 0
-    && Number.isInteger(observation.prompt?.backendNodeId)
-    && observation.prompt.visible === true
-    && observation.prompt.signatureMatches === true
-    && Number.isInteger(observation.continueButton?.backendNodeId)
-    && observation.continueButton.visible === true
-    && observation.continueButton.enabled === true;
-}
 
 export class ContinueWatcher {
   constructor({ mode, maxContinueClicks = 3, now = Date.now, clickCandidate, logger }) {
@@ -68,6 +59,10 @@ export class ContinueWatcher {
     this.state.stableCandidate = undefined;
   }
 
+  get verificationSessionKey() {
+    return this.state.inFlight?.sessionKey;
+  }
+
   async failVerification(reason) {
     const inFlight = this.state.inFlight;
     this.state.inFlight = undefined;
@@ -101,33 +96,33 @@ export class ContinueWatcher {
     if (observation?.kind === 'unsafe') {
       return this.failVerification('verification_unsafe');
     }
-    if (isSafeCandidate(observation) && observation.sessionKey !== inFlight.sessionKey) {
+    const safeCandidate = isSafeCandidateObservation(observation);
+    if (safeCandidate && observation.sessionKey !== inFlight.sessionKey) {
       return this.failVerification('verification_confirmation_lost');
     }
-    if (observation?.kind !== 'none' && !isSafeCandidate(observation)) {
+    if (observation?.kind === 'candidate' && !safeCandidate) {
+      return this.failVerification('verification_confirmation_lost');
+    }
+    if (observation?.kind !== 'candidate' && observation?.kind !== 'none') {
       return this.failVerification('verification_confirmation_lost');
     }
     if (this.now() >= inFlight.deadlineMs) {
       return this.failVerification('verification_timeout');
     }
 
-    if (isSafeCandidate(observation)) {
-      if (observation.prompt.backendNodeId !== inFlight.originalPromptBackendId) {
-        return this.succeedVerification(inFlight);
-      }
-      return 'waiting';
-    }
+    if (safeCandidate) return 'waiting';
 
-    if (observation.sessionKey === inFlight.sessionKey) {
+    if (isProvenDisappearanceObservation(observation)
+      && observation.sessionKey === inFlight.sessionKey) {
       return this.succeedVerification(inFlight);
     }
 
-    if (observation.sessionKey === undefined) return 'waiting';
+    if (observation?.kind === 'none') return 'waiting';
     return this.failVerification('verification_confirmation_lost');
   }
 
   async processDryRun(observation) {
-    if (!isSafeCandidate(observation)) {
+    if (!isSafeCandidateObservation(observation)) {
       this.resetStability();
       return 'waiting';
     }
@@ -147,8 +142,8 @@ export class ContinueWatcher {
   }
 
   async processLive(observation) {
-    if (!isSafeCandidate(observation)) {
-      if (observation?.kind === 'none' && observation.sessionKey) {
+    if (!isSafeCandidateObservation(observation)) {
+      if (isProvenDisappearanceObservation(observation)) {
         this.state.blockedContinuation.delete(observation.sessionKey);
       }
       this.resetStability();
@@ -191,7 +186,7 @@ export class ContinueWatcher {
       sessionKey: observation.sessionKey,
       candidateKey: observation.candidateKey,
       originalPromptBackendId: observation.prompt.backendNodeId,
-      deadlineMs: this.now() + VERIFICATION_WINDOW_MS,
+      deadlineMs: undefined,
     };
     this.state.blockedContinuation.set(observation.sessionKey, {
       signature: CONTINUATION_SIGNATURE,
@@ -210,6 +205,7 @@ export class ContinueWatcher {
       return this.failVerification('click_failed');
     }
 
+    inFlight.deadlineMs = this.now() + VERIFICATION_WINDOW_MS;
     ledger.continueClicks += 1;
     await this.emit('click_invoked', observation);
     return 'click_invoked';

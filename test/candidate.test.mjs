@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as candidateModule from '../src/candidate.mjs';
 import {
   MAX_REGION_DISTANCE,
   analyzeCandidate,
@@ -188,6 +189,80 @@ test('multiple qualifying pairs or a visible unmatched signature is unsafe', () 
 
   assert.deepEqual([ambiguous.kind, ambiguous.reason], ['unsafe', 'ambiguous_pair']);
   assert.deepEqual([unmatched.kind, unmatched.reason], ['unsafe', 'unmatched_signature']);
+});
+
+test('never pairs a prompt and button across a contentDocument boundary', () => {
+  const signature = APPROVED_SIGNATURE_INPUTS[0];
+  const fixture = makeObservationFixture({ promptName: signature });
+  const prompt = { backendNodeId: IDS.prompt, nodeName: '#text' };
+  const button = { backendNodeId: IDS.button, nodeName: 'BUTTON' };
+  fixture.domRoot = {
+    backendNodeId: IDS.document,
+    nodeName: '#document',
+    children: [{
+      backendNodeId: IDS.session,
+      nodeName: 'DIV',
+      attributes: [
+        'class', 'surface ai-chat chat-session active',
+        'data-session-id', 'session-a',
+      ],
+      children: [{
+        backendNodeId: IDS.region,
+        nodeName: 'DIV',
+        children: [
+          button,
+          {
+            backendNodeId: 30,
+            nodeName: 'IFRAME',
+            contentDocument: {
+              backendNodeId: 31,
+              nodeName: '#document',
+              children: [prompt],
+            },
+          },
+        ],
+      }],
+    }],
+  };
+
+  const observation = analyzeCandidate(fixture);
+
+  assert.deepEqual([observation.kind, observation.reason], ['unsafe', 'cross_document_pair']);
+  assert.equal(observation.candidateKey, undefined);
+});
+
+test('rejects an extra permitted visible button deeper in the proven region', () => {
+  const observation = analyzeCandidate(makeObservationFixture({
+    promptName: APPROVED_SIGNATURE_INPUTS[0],
+    deepExtraButton: true,
+  }));
+
+  assert.deepEqual([observation.kind, observation.reason], ['unsafe', 'ambiguous_pair']);
+  assert.equal(observation.candidateKey, undefined);
+});
+
+test('shared candidate validation recomputes identity and requires exact proof fields', () => {
+  assert.equal(typeof candidateModule.isSafeCandidateObservation, 'function');
+  const observation = analyzeCandidate(makeObservationFixture({
+    promptName: APPROVED_SIGNATURE_INPUTS[0],
+  }));
+  assert.equal(candidateModule.isSafeCandidateObservation(observation), true);
+
+  const malformed = [
+    { ...observation, reason: 'unreviewed_reason' },
+    { ...observation, candidateKey: `${observation.sessionKey}:stale` },
+    {
+      ...observation,
+      sessionKey: 'session-only',
+      candidateKey: `session-only:${IDS.prompt}:${IDS.button}:${IDS.region}`,
+    },
+    { ...observation, prompt: { ...observation.prompt, role: 'generic' } },
+    { ...observation, continueButton: { ...observation.continueButton, name: 'continue' } },
+    { ...observation, region: { ...observation.region, combinedAncestorDistance: 9 } },
+  ];
+  for (const value of malformed) {
+    assert.equal(candidateModule.isSafeCandidateObservation(value), false);
+  }
 });
 
 test('candidate keys bind target, session, prompt, button, and region IDs', () => {

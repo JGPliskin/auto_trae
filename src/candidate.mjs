@@ -82,6 +82,15 @@ function lowestCommonAncestor(left, right, parents) {
   return undefined;
 }
 
+function isDescendantOrSelf(node, ancestor, parents) {
+  let current = node;
+  while (current) {
+    if (current === ancestor) return true;
+    current = parents.get(current);
+  }
+  return false;
+}
+
 function preferredSessionIds(region, parents, attributes) {
   const sessionIds = new Set();
   let current = region;
@@ -133,20 +142,131 @@ function buildDomIndex(root) {
   const nodes = new Map();
   const parents = new Map();
   const attributes = new Map();
+  const documents = new Map();
 
-  function visit(node, parent) {
+  function visit(node, parent, documentIdentity) {
     if (!node || typeof node !== 'object') return;
     if (parent) parents.set(node, parent);
+    documents.set(node, documentIdentity);
     attributes.set(node, attributesMap(node.attributes));
     if (Number.isInteger(node.backendNodeId)) nodes.set(node.backendNodeId, node);
 
-    for (const child of Array.isArray(node.children) ? node.children : []) visit(child, node);
-    for (const shadowRoot of Array.isArray(node.shadowRoots) ? node.shadowRoots : []) visit(shadowRoot, node);
-    visit(node.contentDocument, node);
+    for (const child of Array.isArray(node.children) ? node.children : []) {
+      visit(child, node, documentIdentity);
+    }
+    for (const shadowRoot of Array.isArray(node.shadowRoots) ? node.shadowRoots : []) {
+      visit(shadowRoot, node, documentIdentity);
+    }
+    if (node.contentDocument && typeof node.contentDocument === 'object') {
+      visit(node.contentDocument, undefined, node.contentDocument);
+    }
   }
 
-  visit(root, undefined);
-  return { nodes, parents, attributes };
+  visit(root, undefined, root);
+  return { nodes, parents, attributes, documents };
+}
+
+function candidateKeyFor({ sessionKey, promptBackendNodeId, buttonBackendNodeId, regionBackendNodeId }) {
+  return `${sessionKey}:${promptBackendNodeId}:${buttonBackendNodeId}:${regionBackendNodeId}`;
+}
+
+export function isSafeCandidateObservation(observation) {
+  const promptId = observation?.prompt?.backendNodeId;
+  const buttonId = observation?.continueButton?.backendNodeId;
+  const regionId = observation?.region?.backendNodeId;
+  const distance = observation?.region?.combinedAncestorDistance;
+  if (observation?.kind !== 'candidate' || observation.reason !== 'candidate_proven') return false;
+  if (typeof observation.sessionKey !== 'string' || observation.sessionKey.length === 0) return false;
+  const sessionSeparator = observation.sessionKey.indexOf(':');
+  if (sessionSeparator <= 0 || sessionSeparator === observation.sessionKey.length - 1) return false;
+  if (!Number.isInteger(promptId) || !Number.isInteger(buttonId) || !Number.isInteger(regionId)) return false;
+  if (!Number.isInteger(distance) || distance < 0 || distance > MAX_REGION_DISTANCE) return false;
+  if (observation.prompt.role !== 'statictext'
+    || observation.prompt.visible !== true
+    || observation.prompt.signatureMatches !== true) return false;
+  if (observation.continueButton.role !== 'button'
+    || !ACTION_NAMES.has(observation.continueButton.name)
+    || observation.continueButton.visible !== true
+    || observation.continueButton.enabled !== true) return false;
+
+  return observation.candidateKey === candidateKeyFor({
+    sessionKey: observation.sessionKey,
+    promptBackendNodeId: promptId,
+    buttonBackendNodeId: buttonId,
+    regionBackendNodeId: regionId,
+  });
+}
+
+export function isProvenDisappearanceObservation(observation) {
+  const proof = observation?.disappearanceProof;
+  return observation?.kind === 'none'
+    && observation.reason === 'no_signature'
+    && typeof observation.sessionKey === 'string'
+    && observation.sessionKey.length > 0
+    && observation.candidateKey === undefined
+    && observation.prompt === undefined
+    && observation.continueButton === undefined
+    && observation.region === undefined
+    && typeof proof?.targetId === 'string'
+    && proof.targetId.length > 0
+    && typeof proof.sessionId === 'string'
+    && proof.sessionId.length > 0
+    && Number.isInteger(proof.sessionBackendNodeId)
+    && proof.visible === true
+    && proof.signatureAbsent === true
+    && observation.sessionKey === `${proof.targetId}:${proof.sessionId}`;
+}
+
+export function findExpectedSession({ targetId, expectedSessionKey, domRoot }) {
+  if (typeof targetId !== 'string'
+    || typeof expectedSessionKey !== 'string'
+    || !expectedSessionKey.startsWith(`${targetId}:`)) {
+    return { kind: 'unsafe', reason: 'verification_target_mismatch' };
+  }
+  if (!domRoot || typeof domRoot !== 'object') {
+    return { kind: 'unsafe', reason: 'dom_unavailable' };
+  }
+
+  const sessionId = expectedSessionKey.slice(targetId.length + 1);
+  if (sessionId.length === 0) return { kind: 'unsafe', reason: 'session_unavailable' };
+  const dom = buildDomIndex(domRoot);
+  const matches = [];
+  for (const [node, nodeAttributes] of dom.attributes) {
+    const classTokens = new Set((nodeAttributes.get('class') ?? '').split(/\s+/).filter(Boolean));
+    if (classTokens.has('ai-chat')
+      && classTokens.has('chat-session')
+      && nodeAttributes.get('data-session-id')?.trim() === sessionId) {
+      matches.push(node);
+    }
+  }
+  if (matches.length === 0) return { kind: 'unsafe', reason: 'session_unavailable' };
+  if (matches.length > 1) return { kind: 'unsafe', reason: 'session_ambiguous' };
+  if (!Number.isInteger(matches[0].backendNodeId)) {
+    return { kind: 'unsafe', reason: 'missing_backend_node_id' };
+  }
+  return {
+    kind: 'session',
+    targetId,
+    sessionId,
+    sessionKey: expectedSessionKey,
+    sessionBackendNodeId: matches[0].backendNodeId,
+  };
+}
+
+export function proveDisappearance({ session, boxModel }) {
+  const state = boxState(boxModel);
+  if (state === 'unavailable') return emptyObservation('unsafe', 'box_model_unavailable');
+  if (state === 'hidden') return emptyObservation('unsafe', 'not_visible');
+  return emptyObservation('none', 'no_signature', {
+    sessionKey: session.sessionKey,
+    disappearanceProof: {
+      targetId: session.targetId,
+      sessionId: session.sessionId,
+      sessionBackendNodeId: session.sessionBackendNodeId,
+      visible: true,
+      signatureAbsent: true,
+    },
+  });
 }
 
 export function indexDomTree(root) {
@@ -194,10 +314,15 @@ export function analyzeCandidate({ targetId, axNodes, domRoot, boxModels }) {
   }
 
   const allPairs = [];
+  let crossDocumentPair = false;
   for (const promptNode of prompts) {
     for (const buttonNode of buttons) {
       const promptId = backendNodeId(promptNode);
       const buttonId = backendNodeId(buttonNode);
+      if (dom.documents.get(dom.nodes.get(promptId)) !== dom.documents.get(dom.nodes.get(buttonId))) {
+        crossDocumentPair = true;
+        continue;
+      }
       const region = lowestCommonAncestor(
         dom.nodes.get(promptId),
         dom.nodes.get(buttonId),
@@ -212,11 +337,24 @@ export function analyzeCandidate({ targetId, axNodes, domRoot, boxModels }) {
   ));
   if (qualifyingPairs.length > 1) return emptyObservation('unsafe', 'ambiguous_pair');
   if (qualifyingPairs.length === 0) {
-    const reason = allPairs.length > 0 ? 'region_distance_exceeded' : 'unmatched_signature';
+    const reason = allPairs.length > 0
+      ? 'region_distance_exceeded'
+      : crossDocumentPair ? 'cross_document_pair' : 'unmatched_signature';
     return emptyObservation('unsafe', reason);
   }
 
   const pair = qualifyingPairs[0];
+  const regionPrompts = prompts.filter((node) => (
+    dom.documents.get(dom.nodes.get(backendNodeId(node))) === dom.documents.get(pair.node)
+    && isDescendantOrSelf(dom.nodes.get(backendNodeId(node)), pair.node, dom.parents)
+  ));
+  const regionButtons = buttons.filter((node) => (
+    dom.documents.get(dom.nodes.get(backendNodeId(node))) === dom.documents.get(pair.node)
+    && isDescendantOrSelf(dom.nodes.get(backendNodeId(node)), pair.node, dom.parents)
+  ));
+  if (regionPrompts.length !== 1 || regionButtons.length !== 1) {
+    return emptyObservation('unsafe', 'ambiguous_pair');
+  }
   if (prompts.some((node) => node !== pair.promptNode)) {
     return emptyObservation('unsafe', 'unmatched_signature');
   }
@@ -232,17 +370,25 @@ export function analyzeCandidate({ targetId, axNodes, domRoot, boxModels }) {
   }
 
   const sessionKey = `${targetId}:${[...sessionIds][0]}`;
-  const candidateKey = `${sessionKey}:${pair.promptId}:${pair.buttonId}:${pair.node.backendNodeId}`;
+  const candidateKey = candidateKeyFor({
+    sessionKey,
+    promptBackendNodeId: pair.promptId,
+    buttonBackendNodeId: pair.buttonId,
+    regionBackendNodeId: pair.node.backendNodeId,
+  });
   return emptyObservation('candidate', 'candidate_proven', {
     sessionKey,
     candidateKey,
     prompt: {
       backendNodeId: pair.promptId,
+      role: normalizedRole(pair.promptNode),
       visible: true,
       signatureMatches: true,
     },
     continueButton: {
       backendNodeId: pair.buttonId,
+      role: normalizedRole(pair.buttonNode),
+      name: normalizedName(pair.buttonNode),
       visible: true,
       enabled: true,
     },

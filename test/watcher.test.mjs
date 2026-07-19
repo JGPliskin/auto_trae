@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { createCdpClient } from '../src/cdp-client.mjs';
+import { observe } from '../src/observer.mjs';
 import { ContinueWatcher } from '../src/watcher.mjs';
+import { FakeWebSocket } from './helpers/fakes.mjs';
+import {
+  IDS,
+  makeObservationFixture,
+  visibleBox,
+} from './fixtures/observations.mjs';
+
+const SIGNATURE = '[redacted] 输入「继续」以获取更多内容 [redacted]';
 
 function candidate({
   sessionKey = 'target-a:session-a',
@@ -17,11 +27,14 @@ function candidate({
     candidateKey,
     prompt: {
       backendNodeId: promptBackendId,
+      role: 'statictext',
       visible: true,
       signatureMatches: true,
     },
     continueButton: {
       backendNodeId: buttonBackendId,
+      role: 'button',
+      name: 'Continue',
       visible: true,
       enabled: true,
     },
@@ -31,6 +44,28 @@ function candidate({
     },
     outputRevision,
   };
+}
+
+async function productionObservation({
+  fixture = makeObservationFixture({ promptName: SIGNATURE }),
+  expectedSessionKey,
+  axNodes = fixture.axNodes,
+} = {}) {
+  return observe({
+    targetId: fixture.targetId,
+    expectedSessionKey,
+    client: {
+      async getFullAXTree() { return { nodes: axNodes }; },
+      async getDocument() { return { root: fixture.domRoot }; },
+      async getBoxModel({ backendNodeId }) {
+        return fixture.boxModels.get(backendNodeId) ?? visibleBox();
+      },
+    },
+  });
+}
+
+function productionDisappearance(sessionKey, fixture) {
+  return productionObservation({ fixture, expectedSessionKey: sessionKey, axNodes: [] });
 }
 
 function none({ sessionKey } = {}) {
@@ -104,8 +139,8 @@ test('dry-run reports its first safe candidate once without clicking, budgeting,
 
 test('live mode clicks only the second equal safe candidate and resolves its current backend node', async () => {
   const { clicks, events, watcher } = setup();
-  const first = candidate({ buttonBackendId: 200 });
-  const second = candidate({ buttonBackendId: 201 });
+  const first = candidate();
+  const second = candidate();
 
   assert.equal(await watcher.processObservation(first), 'waiting');
   assert.equal(clicks.length, 0);
@@ -117,6 +152,22 @@ test('live mode clicks only the second equal safe candidate and resolves its cur
   }]);
   assert.equal(watcher.state.sessionLedgers.get(second.sessionKey).continueClicks, 1);
   assert.deepEqual(events.map(({ event }) => event), ['candidate_observed', 'click_invoked']);
+});
+
+test('a stale candidateKey with a changed button ID resets stability and cannot click', async () => {
+  const { clicks, watcher } = setup();
+  const original = candidate();
+  const malformed = candidate({ buttonBackendId: 401 });
+
+  assert.equal(await watcher.processObservation(original), 'waiting');
+  assert.equal(await watcher.processObservation(malformed), 'waiting');
+  assert.equal(clicks.length, 0);
+  assert.equal(await watcher.processObservation(original), 'waiting');
+  assert.equal(await watcher.processObservation(original), 'click_invoked');
+  assert.deepEqual(clicks, [{
+    candidateKey: original.candidateKey,
+    backendNodeId: original.continueButton.backendNodeId,
+  }]);
 });
 
 test('blocks before mutation and records the invocation only after the click returns', async () => {
@@ -143,6 +194,49 @@ test('blocks before mutation and records the invocation only after the click ret
   assert.equal(await pendingClick, 'click_invoked');
   assert.equal(watcher.state.sessionLedgers.get(observation.sessionKey).continueClicks, 1);
   assert.equal(events.filter(({ event }) => event === 'click_invoked').length, 1);
+});
+
+test('starts the thirty-second verification deadline after click invocation returns', async () => {
+  let context;
+  context = setup({
+    invokeClick: async () => {
+      context.clock.value = 10_000;
+    },
+  });
+  const observation = candidate();
+
+  await invoke(context.watcher, observation);
+
+  assert.equal(context.watcher.state.inFlight.deadlineMs, 40_000);
+});
+
+test('a CDP click exception does not consume budget or log click_invoked', async (t) => {
+  const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({
+    webSocketDebuggerUrl: socket.url,
+    webSocketFactory: () => socket,
+  });
+  socket.open();
+  t.after(() => client.close());
+  const context = setup({ invokeClick: ({ backendNodeId }) => client.click({ backendNodeId }) });
+  const observation = candidate();
+
+  assert.equal(await context.watcher.processObservation(observation), 'waiting');
+  const pending = context.watcher.processObservation(observation);
+  socket.respond({
+    id: socket.sent[0].id,
+    result: { object: { objectId: 'button-object' } },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.respond({
+    id: socket.sent[1].id,
+    result: { exceptionDetails: { text: '[redacted exception]' } },
+  });
+
+  assert.equal(await pending, 'manual_intervention_required');
+  assert.equal(context.watcher.state.sessionLedgers.get(observation.sessionKey).continueClicks, 0);
+  assert.equal(context.events.some(({ event }) => event === 'click_invoked'), false);
+  assert.deepEqual(manualEvents(context.events).map(({ reason }) => reason), ['click_failed']);
 });
 
 test('unsafe, none, and different-candidate scans reset live stability', async (t) => {
@@ -187,7 +281,10 @@ test('an invoked key and a re-rendered visible blocked signature cannot be click
   assert.equal(clicks.length, 1);
   assert.equal(manualEvents(events).length, 1);
 
-  assert.equal(await watcher.processObservation(none({ sessionKey: original.sessionKey })), 'waiting');
+  assert.equal(
+    await watcher.processObservation(await productionDisappearance(original.sessionKey)),
+    'waiting',
+  );
   assert.equal(await watcher.processObservation(original), 'waiting');
   assert.equal(await watcher.processObservation(original), 'blocked');
   assert.equal(clicks.length, 1);
@@ -205,7 +302,7 @@ test('click caps are per session, report once, and leave a new session budget un
       promptBackendId: index,
     }));
     assert.equal(
-      await watcher.processObservation(none({ sessionKey: sessionA })),
+      await watcher.processObservation(await productionDisappearance(sessionA)),
       'verification_succeeded',
     );
   }
@@ -220,7 +317,7 @@ test('click caps are per session, report once, and leave a new session budget un
   assert.equal(await watcher.processObservation(fourth), 'blocked');
   assert.equal(manualEvents(events).filter(({ reason }) => reason === 'click_cap_exhausted').length, 1);
 
-  const firstB = candidate({ sessionKey: sessionB, candidateKey: `${sessionB}:1:201:20` });
+  const firstB = candidate({ sessionKey: sessionB });
   await invoke(watcher, firstB);
 
   assert.equal(clicks.length, 4);
@@ -246,7 +343,7 @@ test('a failed third invocation stays blocked without a duplicate cap manual eve
       buttonBackendId: 200 + index,
     }));
     assert.equal(
-      await watcher.processObservation(none({ sessionKey })),
+      await watcher.processObservation(await productionDisappearance(sessionKey)),
       'verification_succeeded',
     );
   }
@@ -274,7 +371,7 @@ test('a failed third invocation stays blocked without a duplicate cap manual eve
   assert.equal(watcher.state.sessionLedgers.get(sessionKey).exhaustedReported, false);
 });
 
-test('changed output alone is not proof; disappearance before 30 seconds is', async () => {
+test('changed output alone is not proof; production-observed disappearance before 30 seconds is', async () => {
   const { clock, events, watcher } = setup();
   const original = candidate();
   await invoke(watcher, original);
@@ -284,7 +381,7 @@ test('changed output alone is not proof; disappearance before 30 seconds is', as
   assert.equal(events.some(({ event }) => event === 'verification_succeeded'), false);
 
   assert.equal(
-    await watcher.processObservation(none({ sessionKey: original.sessionKey })),
+    await watcher.processObservation(await productionDisappearance(original.sessionKey)),
     'verification_succeeded',
   );
   assert.equal(events.filter(({ event }) => event === 'verification_succeeded').length, 1);
@@ -315,20 +412,40 @@ test('a sessionless none cannot verify or unblock an in-flight continuation', as
   assert.equal(watcher.state.blockedContinuation.has(original.sessionKey), true);
 });
 
-test('a different prompt ID in the same session verifies replacement before a fresh two-scan gate', async () => {
-  const { clicks, events, watcher } = setup();
+test('a hand-constructed sessionful none without observer proof cannot verify', async () => {
+  const { events, watcher } = setup();
   const original = candidate();
-  const replacement = candidate({
-    candidateKey: 'target-a:session-a:301:401:20',
-    promptBackendId: 301,
-    buttonBackendId: 401,
-  });
   await invoke(watcher, original);
 
-  assert.equal(await watcher.processObservation(replacement), 'verification_succeeded');
+  assert.equal(
+    await watcher.processObservation(none({ sessionKey: original.sessionKey })),
+    'waiting',
+  );
+  assert.equal(events.some(({ event }) => event === 'verification_succeeded'), false);
+  assert.equal(watcher.state.inFlight.candidateKey, original.candidateKey);
+});
+
+test('observer-to-watcher re-render changes stay blocked until proven disappearance and a fresh two-scan gate', async () => {
+  const { clicks, events, watcher } = setup();
+  const originalFixture = makeObservationFixture({ promptName: SIGNATURE });
+  const replacementFixture = makeObservationFixture({
+    promptName: SIGNATURE,
+    promptIdBase: 301,
+    buttonIdBase: 401,
+  });
+  const original = await productionObservation({ fixture: originalFixture });
+  const replacement = await productionObservation({ fixture: replacementFixture });
+  await invoke(watcher, original);
+
+  assert.equal(await watcher.processObservation(replacement), 'waiting');
+  assert.equal(await watcher.processObservation(replacement), 'waiting');
   assert.equal(clicks.length, 1);
+  assert.equal(events.filter(({ event }) => event === 'verification_succeeded').length, 0);
+  assert.equal(watcher.state.inFlight.candidateKey, original.candidateKey);
+
+  const disappearance = await productionDisappearance(original.sessionKey, originalFixture);
+  assert.equal(await watcher.processObservation(disappearance), 'verification_succeeded');
   assert.equal(events.filter(({ event }) => event === 'verification_succeeded').length, 1);
-  assert.equal(watcher.state.inFlight, undefined);
 
   assert.equal(await watcher.processObservation(replacement), 'waiting');
   assert.equal(clicks.length, 1);

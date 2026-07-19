@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createCdpClient } from '../src/cdp-client.mjs';
 import { observe } from '../src/observer.mjs';
 import { FakeWebSocket } from './helpers/fakes.mjs';
-import { axNode, makeObservationFixture } from './fixtures/observations.mjs';
+import { IDS, axNode, makeObservationFixture } from './fixtures/observations.mjs';
 
 const REDACTED_SIGNATURE_INPUT = '[redacted] 输入「继续」以获取更多内容 [redacted]';
 
@@ -46,6 +46,70 @@ test('no AX continuation signature returns none without DOM or box requests', as
   });
 
   assert.equal((await pending).kind, 'none');
+  assert.deepEqual(socket.sent.map(({ method }) => method), ['Accessibility.getFullAXTree']);
+});
+
+test('verification mode proves a target-bound rendered session before returning none', async (t) => {
+  const fixture = makeObservationFixture({ promptName: REDACTED_SIGNATURE_INPUT });
+  const { client, socket } = setup(t);
+  const expectedSessionKey = 'target-a:session-a';
+  const pending = observe({
+    client,
+    targetId: fixture.targetId,
+    expectedSessionKey,
+  });
+
+  socket.respond({
+    id: socket.sent[0].id,
+    result: { nodes: [axNode({ backendNodeId: 50, role: 'StaticText', name: '[redacted]' })] },
+  });
+  await flushRequests();
+  assert.deepEqual(socket.sent.slice(1).map(({ method }) => method), ['DOM.getDocument']);
+
+  socket.respond({
+    id: requestFor(socket, 'DOM.getDocument').id,
+    result: { root: fixture.domRoot },
+  });
+  await flushRequests();
+  const sessionBox = requestFor(socket, 'DOM.getBoxModel', IDS.session);
+  assert.ok(sessionBox);
+  socket.respond({ id: sessionBox.id, result: fixture.boxModels.get(IDS.prompt) });
+
+  assert.deepEqual(await pending, {
+    kind: 'none',
+    reason: 'no_signature',
+    sessionKey: expectedSessionKey,
+    candidateKey: undefined,
+    prompt: undefined,
+    continueButton: undefined,
+    region: undefined,
+    disappearanceProof: {
+      targetId: fixture.targetId,
+      sessionId: 'session-a',
+      sessionBackendNodeId: IDS.session,
+      visible: true,
+      signatureAbsent: true,
+    },
+  });
+});
+
+test('verification mode rejects an expected session from another target', async (t) => {
+  const { client, socket } = setup(t);
+  const pending = observe({
+    client,
+    targetId: 'target-a',
+    expectedSessionKey: 'target-b:session-a',
+  });
+
+  socket.respond({ id: socket.sent[0].id, result: { nodes: [] } });
+
+  assert.deepEqual(
+    [
+      (await pending).kind,
+      (await pending).reason,
+    ],
+    ['unsafe', 'verification_target_mismatch'],
+  );
   assert.deepEqual(socket.sent.map(({ method }) => method), ['Accessibility.getFullAXTree']);
 });
 

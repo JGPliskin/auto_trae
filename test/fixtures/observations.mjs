@@ -5,6 +5,7 @@ export const IDS = Object.freeze({
   prompt: 101,
   button: 201,
   unmatchedPrompt: 301,
+  extraButton: 401,
 });
 
 export function axNode({ backendNodeId, role, name, disabled }) {
@@ -21,6 +22,8 @@ export function axNode({ backendNodeId, role, name, disabled }) {
 export function visibleBox(width = 20, height = 10) {
   return { model: { width, height } };
 }
+
+const MAX_DEEP_BUTTON_HOPS = 6;
 
 function branch(leaf, hops, idBase) {
   let node = leaf;
@@ -49,6 +52,10 @@ export function makeObservationFixture({
   pairCount = 1,
   sessionIds = ['session-a'],
   unmatchedPrompt = false,
+  deepExtraButton = false,
+  promptIdBase = IDS.prompt,
+  buttonIdBase = IDS.button,
+  regionId = IDS.region,
 } = {}) {
   const promptHops = Math.floor(distance / 2);
   const buttonHops = distance - promptHops;
@@ -57,8 +64,8 @@ export function makeObservationFixture({
   const regionChildren = [];
 
   for (let index = 0; index < pairCount; index += 1) {
-    const promptId = IDS.prompt + index;
-    const buttonId = IDS.button + index;
+    const promptId = promptIdBase + index;
+    const buttonId = buttonIdBase + index;
     axNodes.push(
       axNode({ backendNodeId: promptId, role: 'StaticText', name: promptName }),
       axNode({ backendNodeId: buttonId, role: 'button', name: buttonName }),
@@ -71,8 +78,22 @@ export function makeObservationFixture({
     );
   }
 
+  if (deepExtraButton) {
+    axNodes.push(axNode({
+      backendNodeId: IDS.extraButton,
+      role: 'button',
+      name: buttonName,
+    }));
+    boxModels.set(IDS.extraButton, visibleBox());
+    regionChildren.push(branch(
+      { backendNodeId: IDS.extraButton, nodeName: 'BUTTON' },
+      MAX_DEEP_BUTTON_HOPS,
+      4_000,
+    ));
+  }
+
   const region = {
-    backendNodeId: IDS.region,
+    backendNodeId: regionId,
     nodeName: 'DIV',
     attributes: ['class', 'continuation-card'],
     children: regionChildren,

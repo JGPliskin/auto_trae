@@ -174,6 +174,58 @@ test('waitUntilOpen rejects a pre-open close and cleans temporary listeners', as
   await assert.rejects(attachment, /socket closed/);
 });
 
+test('waitUntilOpen times out a never-settling socket and cleans temporary listeners', async (t) => {
+  const socket = new TrackingWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({
+    webSocketDebuggerUrl: socket.url,
+    webSocketFactory: () => socket,
+    openTimeoutMs: 5,
+  });
+  t.after(() => client.close());
+  const attachment = client.waitUntilOpen().then(
+    () => 'opened',
+    (error) => error.message,
+  );
+
+  const outcome = await Promise.race([
+    attachment,
+    new Promise((resolve) => setTimeout(() => resolve('test_harness_timeout'), 50)),
+  ]);
+
+  assert.match(outcome, /attachment timeout/);
+  assert.deepEqual(
+    ['open', 'close', 'error'].map((type) => socket.listenerCount(type)),
+    [0, 1, 1],
+  );
+});
+
+test('waitUntilOpen aborts and cleans temporary listeners and its timeout', async (t) => {
+  const socket = new TrackingWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({
+    webSocketDebuggerUrl: socket.url,
+    webSocketFactory: () => socket,
+    openTimeoutMs: 50,
+  });
+  t.after(() => client.close());
+  const controller = new AbortController();
+  const attachment = client.waitUntilOpen({ signal: controller.signal }).then(
+    () => 'opened',
+    (error) => error.message,
+  );
+
+  controller.abort();
+  const outcome = await Promise.race([
+    attachment,
+    new Promise((resolve) => setTimeout(() => resolve('test_harness_timeout'), 100)),
+  ]);
+
+  assert.match(outcome, /attachment aborted/);
+  assert.deepEqual(
+    ['open', 'close', 'error'].map((type) => socket.listenerCount(type)),
+    [0, 1, 1],
+  );
+});
+
 test('uses the thin protocol helpers and a fresh object for the exact click function', async () => {
   const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
   const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
@@ -206,6 +258,34 @@ test('uses the thin protocol helpers and a fresh object for the exact click func
   socket.respond({ id: socket.sent[6].id, result: {} });
 
   await Promise.all([axTree, document, box, resolved, called, clicked]);
+});
+
+test('click rejects a missing resolved objectId before Runtime invocation', async () => {
+  const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
+  socket.open();
+  const clicked = client.click({ backendNodeId: 7 });
+
+  socket.respond({ id: socket.sent[0].id, result: { object: {} } });
+
+  await assert.rejects(clicked, { message: 'CDP node resolution missing objectId' });
+  assert.deepEqual(socket.sent.map(({ method }) => method), ['DOM.resolveNode']);
+});
+
+test('click rejects Runtime exceptionDetails after resolving a fresh object', async () => {
+  const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
+  socket.open();
+  const clicked = client.click({ backendNodeId: 7 });
+
+  socket.respond({ id: socket.sent[0].id, result: { object: { objectId: 'fresh-object-7' } } });
+  await Promise.resolve();
+  socket.respond({
+    id: socket.sent[1].id,
+    result: { exceptionDetails: { text: '[redacted exception]' } },
+  });
+
+  await assert.rejects(clicked, { message: 'CDP click invocation failed' });
 });
 
 test('bounds a request timeout', async () => {
