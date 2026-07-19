@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { discoverTraeTarget as discoverDefaultTraeTarget } from '../src/cdp-client.mjs';
 import { renderProcessError, runCli } from '../src/cli.mjs';
 import { usage } from '../src/config.mjs';
+import { observe as observeDefault } from '../src/observer.mjs';
+import { makeObservationFixture, visibleBox } from './fixtures/observations.mjs';
 
 const cliPath = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
 
@@ -321,6 +324,81 @@ test('passes the in-flight session to the observer for production disappearance 
   );
 });
 
+test('manual verification block clears through production observer proof before a later two-scan click', async () => {
+  const controller = new AbortController();
+  const signature = '[redacted] 输入「继续」以获取更多内容 [redacted]';
+  const original = makeObservationFixture({ promptName: signature });
+  const replacement = makeObservationFixture({
+    promptName: signature,
+    promptIdBase: 301,
+    buttonIdBase: 401,
+  });
+  const disappearedRoot = structuredClone(original.domRoot);
+  disappearedRoot.children[0].children = [];
+  const events = [];
+  const expectedSessionKeys = [];
+  const clickScans = [];
+  let scan = 0;
+
+  const client = {
+    async waitUntilOpen() {},
+    close() {},
+    async getFullAXTree() {
+      scan += 1;
+      if (scan === 7) controller.abort();
+      if (scan <= 3) return { nodes: original.axNodes };
+      if (scan === 4 || scan === 7) return { nodes: [] };
+      return { nodes: replacement.axNodes };
+    },
+    getDocument() {
+      if (scan === 3) throw new Error('[redacted DOM failure]');
+      if (scan === 4) return Promise.resolve({ root: disappearedRoot });
+      return Promise.resolve({ root: scan < 4 ? original.domRoot : replacement.domRoot });
+    },
+    async getBoxModel({ backendNodeId }) {
+      const boxes = scan < 4 ? original.boxModels : replacement.boxModels;
+      return boxes.get(backendNodeId) ?? visibleBox();
+    },
+    async click() {
+      clickScans.push(scan);
+      if (clickScans.length === 2) controller.abort();
+    },
+  };
+
+  await runCli({
+    argv: ['--enable', '--poll-ms', '250'],
+    signal: controller.signal,
+    discoverTraeTarget: async () => target,
+    createCdpClient: () => client,
+    observe: async (args) => {
+      expectedSessionKeys.push(args.expectedSessionKey);
+      return observeDefault(args);
+    },
+    sleep: async () => {},
+    now: () => 0,
+    logger: { async event(entry) { events.push(entry); } },
+    output: () => {},
+  });
+
+  assert.equal(scan, 6);
+  assert.deepEqual(expectedSessionKeys, [
+    undefined,
+    undefined,
+    'target-a:session-a',
+    'target-a:session-a',
+    undefined,
+    undefined,
+  ]);
+  assert.deepEqual(clickScans, [2, 6]);
+  assert.deepEqual(
+    events.filter(({ event }) => event === 'manual_intervention_required')
+      .map(({ reason }) => reason),
+    ['verification_unsafe'],
+  );
+  assert.equal(events.filter(({ event }) => event === 'candidate_observed').length, 2);
+  assert.equal(events.filter(({ event }) => event === 'click_invoked').length, 2);
+});
+
 test('AbortSignal closes an attached client immediately and exits foreground cleanly', async () => {
   const controller = new AbortController();
   let releaseObservation;
@@ -374,6 +452,38 @@ test('abort during slow discovery returns before discovery settles and never cre
   assert.equal(context.calls.clientCreations, 0);
   assert.equal(context.calls.observations, 0);
   assert.equal(context.calls.clicks.length, 0);
+});
+
+test('foreground abort reaches and cancels the underlying production discovery fetch', async () => {
+  const controller = new AbortController();
+  let fetchSignal;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const fetchImpl = (_url, { signal } = {}) => {
+    fetchSignal = signal;
+    markStarted();
+    return new Promise((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new Error('[redacted abort]')), { once: true });
+    });
+  };
+
+  const running = runCli({
+    signal: controller.signal,
+    discoverTraeTarget: (args) => discoverDefaultTraeTarget({
+      ...args,
+      fetchImpl,
+      discoveryTimeoutMs: 1_000,
+    }),
+    createCdpClient: () => { throw new Error('client must not be created'); },
+    sleep: async () => {},
+    logger: { async event() {} },
+    output: () => {},
+  });
+  await started;
+  controller.abort();
+  await running;
+
+  assert.equal(fetchSignal?.aborted, true);
 });
 
 test('a discovery rejection after abort is consumed without unhandled rejection', async () => {

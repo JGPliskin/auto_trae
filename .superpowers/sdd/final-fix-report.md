@@ -198,3 +198,129 @@ integration test; behavior is validated entirely through deterministic fake
 protocol, observer, watcher, CLI, and static launcher tests. The five-second
 attachment bound is configurable at the CDP client factory boundary but is not
 exposed as a public CLI option, because no public configurability was required.
+
+## Follow-up hardening: findings 10 and 11
+
+Date: 2026-07-20
+Starting hardening head: `a67e2665747c9f1a74fbbf11a547499d98ec2ad8`
+
+### Scope and implementation
+
+This follow-up changes only the two lifecycle findings added by the final
+re-review.
+
+10. **Manual-block proof context:** `ContinueWatcher` now retains manual-block
+    proof context in its existing per-session block map and exposes
+    `proofSessionKeyForTarget(targetId)`. A matching in-flight session has
+    priority. Without an in-flight action, exactly one reported manual block
+    for the current target may be selected; zero or multiple matching blocks
+    return `undefined` and fail closed. CLI asks this target-bound selector on
+    every production observation, so a later AX no-signature scan can still
+    request DOM/session proof after `inFlight` has ended. Watcher continues to
+    clear only the exact session key carried by a structurally proven
+    disappearance, so Session B proof cannot clear Session A. A fake
+    CLI-to-production-observer-to-watcher test covers click, verification
+    failure, retained proof request, disappearance, block clearing, and a
+    genuinely later card passing the normal two-scan gate.
+11. **Discovery cancellation and timeout:** `discoverTraeTarget()` now creates
+    a linked AbortController, passes its signal to fetch, enforces a finite
+    five-second default timeout, maps timeout/foreground abort to fixed
+    redacted errors, and clears both its timer and external abort listener in
+    `finally`. CLI passes its foreground signal into discovery. Existing
+    reconnect scheduling remains unchanged.
+
+### TDD RED evidence
+
+Baseline focused lifecycle suites before new regressions:
+
+```powershell
+node --test test/observer.test.mjs test/cdp-client.test.mjs test/cli.test.mjs test/watcher.test.mjs test/launcher-script.test.mjs
+```
+
+Result: exit `0`; `60/60` passed.
+
+Finding 10 RED command:
+
+```powershell
+node --test --test-name-pattern "blocked proof selection|manual verification block" test/watcher.test.mjs test/cli.test.mjs
+```
+
+Result: exit `1`; `0` passed and `2` failed. The fake end-to-end flow reached
+its seventh protective scan instead of completing the later click on scan six,
+and `proofSessionKeyForTarget` was absent. This directly demonstrated that the
+post-failure CLI observation lost Session A proof context.
+
+Finding 11 RED command:
+
+```powershell
+node --test --test-name-pattern "never-settling discovery|successful discovery cleans|foreground abort reaches" test/cdp-client.test.mjs test/cli.test.mjs
+```
+
+Result: exit `1`; `0` passed and `3` failed. The never-settling fetch reached
+the 50 ms test-harness guard instead of a discovery timeout; successful
+discovery received no signal to verify cleanup; and foreground abort did not
+reach the underlying production fetch.
+
+### TDD GREEN evidence
+
+After the minimal finding 10 implementation, the same focused command passed
+`2/2`. After the minimal finding 11 implementation, its focused command passed
+`3/3`. Both runs had zero failures, cancellations, skips, todos, warnings, or
+hangs.
+
+Final requested focused suites:
+
+```powershell
+node --test test/observer.test.mjs test/cdp-client.test.mjs test/cli.test.mjs test/watcher.test.mjs test/launcher-script.test.mjs
+```
+
+Result: exit `0`; `65/65` passed, `0` failed, `0` cancelled, `0` skipped,
+`0` todo; no warnings or hangs.
+
+Final full suite:
+
+```powershell
+node --test
+```
+
+Result: exit `0`; `90/90` passed, `0` failed, `0` cancelled, `0` skipped,
+`0` todo; no warnings or hangs.
+
+### Files changed in this follow-up
+
+- `src/watcher.mjs`
+- `src/cli.mjs`
+- `src/cdp-client.mjs`
+- `test/watcher.test.mjs`
+- `test/cli.test.mjs`
+- `test/cdp-client.test.mjs`
+- `.superpowers/sdd/final-fix-report.md`
+
+No launcher, observer, candidate, logger, configuration, or user-owned
+docs/research/context/design/plan file changed in this follow-up.
+
+### Follow-up self-review and unresolved concerns
+
+- Re-read findings 10 and 11 against the final source and tests; both have a
+  direct failing-before/failing-after regression path.
+- Confirmed in-flight proof remains highest priority and post-failure proof is
+  retained only for reported manual blocks belonging to the current target.
+- Confirmed multiple manual blocks for one target select no session rather than
+  guessing; this is the intentional fail-closed behavior permitted by finding
+  10. Such ambiguous blocks require external state change or process restart
+  before automatic clearing can resume.
+- Confirmed a production-shaped Session B disappearance proof deletes only the
+  Session B map entry and leaves Session A blocked.
+- Confirmed later candidates still require the shared structural validator and
+  two equal safe scans before click.
+- Confirmed discovery timeout and foreground abort both abort the signal passed
+  to fetch, while success clears the timer and unlinks the foreground signal.
+- Confirmed reconnect delays and fixed/redacted CLI logging behavior were not
+  changed.
+- Confirmed tests remain fake-only; Trae, real CDP, and `Start-Process` were not
+  invoked.
+
+No blocking design contradiction or known unresolved code defect remains. As
+before, real Trae/CDP acceptance was intentionally not performed. Cancellation
+of an injected custom fetch relies on that implementation honoring the standard
+AbortSignal contract; the native fetch used in production does so.

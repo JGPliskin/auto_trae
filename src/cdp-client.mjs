@@ -1,5 +1,6 @@
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 5_000;
 
 function requireLoopbackUrl(value, protocol) {
   let url;
@@ -26,18 +27,50 @@ function isTraePageTarget(target) {
     && typeof target.webSocketDebuggerUrl === 'string';
 }
 
-export async function discoverTraeTarget({ endpoint, fetchImpl = fetch }) {
+export async function discoverTraeTarget({
+  endpoint,
+  fetchImpl = fetch,
+  signal,
+  discoveryTimeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS,
+}) {
   const endpointUrl = requireLoopbackUrl(endpoint, 'http:');
-  const response = await fetchImpl(new URL('/json/list', endpointUrl).href);
-  if (!response.ok) throw new Error(`CDP discovery failed with status ${response.status}`);
+  if (!Number.isFinite(discoveryTimeoutMs) || discoveryTimeoutMs <= 0) {
+    throw new Error('CDP discovery timeout must be positive');
+  }
+  if (signal?.aborted) throw new Error('CDP discovery aborted');
 
-  const targets = await response.json();
-  const matches = Array.isArray(targets) ? targets.filter(isTraePageTarget) : [];
-  if (matches.length === 0) return { kind: 'unavailable' };
-  if (matches.length > 1) return { kind: 'ambiguous' };
+  const requestController = new AbortController();
+  let terminationReason;
+  const terminate = (reason) => {
+    if (terminationReason) return;
+    terminationReason = reason;
+    requestController.abort();
+  };
+  const handleAbort = () => terminate('abort');
+  signal?.addEventListener('abort', handleAbort, { once: true });
+  const timer = setTimeout(() => terminate('timeout'), discoveryTimeoutMs);
 
-  requireLoopbackUrl(matches[0].webSocketDebuggerUrl, 'ws:');
-  return matches[0];
+  try {
+    const response = await fetchImpl(new URL('/json/list', endpointUrl).href, {
+      signal: requestController.signal,
+    });
+    if (!response.ok) throw new Error(`CDP discovery failed with status ${response.status}`);
+
+    const targets = await response.json();
+    const matches = Array.isArray(targets) ? targets.filter(isTraePageTarget) : [];
+    if (matches.length === 0) return { kind: 'unavailable' };
+    if (matches.length > 1) return { kind: 'ambiguous' };
+
+    requireLoopbackUrl(matches[0].webSocketDebuggerUrl, 'ws:');
+    return matches[0];
+  } catch (error) {
+    if (terminationReason === 'timeout') throw new Error('CDP discovery timeout');
+    if (terminationReason === 'abort' || signal?.aborted) throw new Error('CDP discovery aborted');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', handleAbort);
+  }
 }
 
 export function createCdpClient({

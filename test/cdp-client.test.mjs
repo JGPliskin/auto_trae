@@ -57,6 +57,55 @@ test('reports unavailable or ambiguous Trae targets without choosing one', async
   assert.deepEqual(ambiguous, { kind: 'ambiguous' });
 });
 
+test('bounds a never-settling discovery and aborts its underlying fetch', async () => {
+  let fetchSignal;
+  const fetchImpl = (_url, { signal } = {}) => {
+    fetchSignal = signal;
+    return new Promise((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new Error('[redacted abort]')), { once: true });
+    });
+  };
+  let harnessTimer;
+  const outcome = await Promise.race([
+    discoverTraeTarget({
+      endpoint: 'http://127.0.0.1:39240',
+      fetchImpl,
+      discoveryTimeoutMs: 5,
+    }).then(
+      () => 'resolved',
+      (error) => error.message,
+    ),
+    new Promise((resolve) => {
+      harnessTimer = setTimeout(() => resolve('test_harness_timeout'), 50);
+    }),
+  ]);
+  clearTimeout(harnessTimer);
+
+  assert.equal(outcome, 'CDP discovery timeout');
+  assert.equal(fetchSignal?.aborted, true);
+});
+
+test('successful discovery cleans its timeout and external abort listener', async () => {
+  const controller = new AbortController();
+  const successful = fakeFetch([traeTarget]);
+  let fetchSignal;
+  const fetchImpl = (...args) => {
+    fetchSignal = args[1]?.signal;
+    return successful.fetchImpl(...args);
+  };
+
+  await discoverTraeTarget({
+    endpoint: 'http://127.0.0.1:39240',
+    fetchImpl,
+    signal: controller.signal,
+    discoveryTimeoutMs: 5,
+  });
+  controller.abort();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(fetchSignal?.aborted, false);
+});
+
 test('rejects non-loopback discovery and debugger URLs before socket creation', async () => {
   await assert.rejects(
     discoverTraeTarget({ endpoint: 'http://192.168.1.2:39240', fetchImpl: fakeFetch([]).fetchImpl }),

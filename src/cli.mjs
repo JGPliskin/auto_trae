@@ -121,7 +121,7 @@ export async function runCli({
       let stage = 'discovery';
       try {
         const target = await waitForAbort(
-          discoverTraeTarget({ endpoint: config.endpoint }),
+          discoverTraeTarget({ endpoint: config.endpoint, signal }),
           signal,
         );
         if (target === ABORTED || signal?.aborted) break;
@@ -150,7 +150,7 @@ export async function runCli({
             const observation = await waitForAbort(observe({
               client,
               targetId: target.id,
-              expectedSessionKey: watcher.verificationSessionKey,
+              expectedSessionKey: watcher.proofSessionKeyForTarget(target.id),
             }), signal);
             if (observation === ABORTED || signal?.aborted) break;
             await watcher.processObservation(observation);

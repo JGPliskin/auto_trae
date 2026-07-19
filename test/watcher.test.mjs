@@ -520,6 +520,26 @@ test('a manually blocked session does not stop observation or clicks in a new se
   assert.equal(watcher.state.inFlight.sessionKey, sessionB);
 });
 
+test('blocked proof selection is target-bound and fail-closed for multiple manual blocks', async () => {
+  const { watcher } = setup();
+  const sessionA = 'target-a:session-a';
+  const sessionB = 'target-a:session-b';
+
+  assert.equal(typeof watcher.proofSessionKeyForTarget, 'function');
+  await invoke(watcher, candidate({ sessionKey: sessionA }));
+  assert.equal(await watcher.processObservation(unsafe()), 'manual_intervention_required');
+  assert.equal(watcher.proofSessionKeyForTarget('target-a'), sessionA);
+  assert.equal(watcher.proofSessionKeyForTarget('target-b'), undefined);
+
+  await invoke(watcher, candidate({
+    sessionKey: sessionB,
+    candidateKey: `${sessionB}:101:201:20`,
+  }));
+  assert.equal(watcher.proofSessionKeyForTarget('target-a'), sessionB);
+  assert.equal(await watcher.processObservation(unsafe()), 'manual_intervention_required');
+  assert.equal(watcher.proofSessionKeyForTarget('target-a'), undefined);
+});
+
 test('a none observed in session B cannot clear session A manual block', async () => {
   const { clicks, watcher } = setup();
   const originalA = candidate();
@@ -532,7 +552,14 @@ test('a none observed in session B cannot clear session A manual block', async (
     candidateKey: `${sessionB}:101:201:20`,
   });
   assert.equal(await watcher.processObservation(observationB), 'waiting');
-  assert.equal(await watcher.processObservation(none()), 'waiting');
+  const fixtureB = makeObservationFixture({
+    promptName: SIGNATURE,
+    sessionIds: ['session-b'],
+  });
+  assert.equal(
+    await watcher.processObservation(await productionDisappearance(sessionB, fixtureB)),
+    'waiting',
+  );
   assert.equal(watcher.state.blockedContinuation.has(originalA.sessionKey), true);
 
   const rerenderedA = candidate({

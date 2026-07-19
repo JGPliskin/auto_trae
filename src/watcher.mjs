@@ -63,6 +63,22 @@ export class ContinueWatcher {
     return this.state.inFlight?.sessionKey;
   }
 
+  proofSessionKeyForTarget(targetId) {
+    if (typeof targetId !== 'string' || targetId.length === 0) return undefined;
+    const targetPrefix = `${targetId}:`;
+    if (this.state.inFlight?.sessionKey.startsWith(targetPrefix)) {
+      return this.state.inFlight.sessionKey;
+    }
+
+    const manualBlocks = [...this.state.blockedContinuation]
+      .filter(([sessionKey, block]) => (
+        sessionKey.startsWith(targetPrefix)
+        && block.reported === true
+      ))
+      .map(([sessionKey]) => sessionKey);
+    return manualBlocks.length === 1 ? manualBlocks[0] : undefined;
+  }
+
   async failVerification(reason) {
     const inFlight = this.state.inFlight;
     this.state.inFlight = undefined;
