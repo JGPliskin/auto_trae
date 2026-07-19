@@ -166,3 +166,107 @@ None blocking. The logger's connection-state allowlist is present for Task 5's
 documented event code but no reconnect behavior is implemented here. Existing
 user-owned modified and untracked research/design files remain untouched and
 will not be staged. No Trae process or endpoint was contacted.
+
+## Important review fix — prompt replacement and session-owned clearing
+
+This section supersedes the earlier statement that verification accepts only a
+fresh `none` observation. A fresh safe same-session candidate whose prompt
+backend ID differs from `originalPromptBackendId` also proves that the original
+prompt disappeared before the deadline.
+
+### Issues fixed
+
+1. `originalPromptBackendId` is now compared during in-flight verification. A
+   different prompt ID in the same rendered session records
+   `verification_succeeded` without clicking the replacement. That replacement
+   must then pass a new two-equal-scan gate before any later invocation.
+2. A sessionless `none` no longer clears every continuation block. The watcher
+   tracks the last safely observed rendered session and deletes only that
+   session's block. A `none` associated with Session B therefore cannot clear a
+   manual block retained for Session A, while a disappearance associated with
+   the in-flight session remains valid proof.
+
+No candidate, observer, logger, or CLI interface changed.
+
+### RED evidence
+
+The two regression tests were added before the implementation change and run
+with:
+
+```powershell
+node --test test/watcher.test.mjs
+```
+
+The run failed for the two expected behavioral reasons:
+
+```text
+tests 17
+pass 15
+fail 2
+duration_ms 823.6811
+```
+
+- Prompt replacement returned `waiting` instead of
+  `verification_succeeded`.
+- Session B's `none` removed Session A's block (`false !== true`).
+
+### GREEN evidence
+
+After the minimal watcher fix, the focused watcher suite passed:
+
+```text
+tests 17
+pass 17
+fail 0
+duration_ms 878.2456
+```
+
+Fresh required logger/watcher verification then passed:
+
+```powershell
+node --test test/logger.test.mjs test/watcher.test.mjs
+```
+
+```text
+tests 22
+pass 22
+fail 0
+duration_ms 1617.7806
+```
+
+Fresh full-suite verification also passed:
+
+```powershell
+node --test
+```
+
+```text
+tests 50
+pass 50
+fail 0
+duration_ms 5976.8554
+```
+
+Both required final commands exited normally with no warnings, diagnostics,
+cancelled/skipped tests, timeout symptoms, or hanging handles.
+
+### Fix files and self-review
+
+- `src/watcher.mjs`: internal rendered-session context, prompt-ID replacement
+  proof, shared verification-success transition, and session-specific block
+  deletion.
+- `test/watcher.test.mjs`: replacement proof/fresh-gate regression,
+  cross-session `none` isolation regression, and corrected same-prompt
+  re-render fixture.
+- `.superpowers/sdd/task-4-report.md`: this review-fix record and correction.
+
+The implementation continues to fail closed: unsafe or cross-session evidence
+cannot verify an in-flight action; exact invoked candidate keys remain blocked;
+same-prompt re-renders remain non-proof; replacement success does not seed the
+stability gate; and Session A state cannot be erased by Session B observations.
+No real endpoint or Trae process was contacted. User-owned modified/untracked
+research and design files were not edited.
+
+### Fix concerns
+
+None blocking.

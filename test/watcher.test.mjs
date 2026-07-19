@@ -171,8 +171,8 @@ test('an invoked key and a re-rendered visible blocked signature cannot be click
   const { clicks, clock, events, watcher } = setup();
   const original = candidate();
   const rerendered = candidate({
-    candidateKey: 'target-a:session-a:301:401:20',
-    promptBackendId: 301,
+    candidateKey: 'target-a:session-a:101:401:20',
+    promptBackendId: 101,
     buttonBackendId: 401,
   });
 
@@ -246,6 +246,27 @@ test('changed output alone is not proof; disappearance before 30 seconds is', as
   assert.equal(watcher.state.blockedContinuation.has(original.sessionKey), false);
 });
 
+test('a different prompt ID in the same session verifies replacement before a fresh two-scan gate', async () => {
+  const { clicks, events, watcher } = setup();
+  const original = candidate();
+  const replacement = candidate({
+    candidateKey: 'target-a:session-a:301:401:20',
+    promptBackendId: 301,
+    buttonBackendId: 401,
+  });
+  await invoke(watcher, original);
+
+  assert.equal(await watcher.processObservation(replacement), 'verification_succeeded');
+  assert.equal(clicks.length, 1);
+  assert.equal(events.filter(({ event }) => event === 'verification_succeeded').length, 1);
+  assert.equal(watcher.state.inFlight, undefined);
+
+  assert.equal(await watcher.processObservation(replacement), 'waiting');
+  assert.equal(clicks.length, 1);
+  assert.equal(await watcher.processObservation(replacement), 'click_invoked');
+  assert.equal(clicks.length, 2);
+});
+
 test('timeout, unsafe verification, and loss of session confirmation each report one manual event', async (t) => {
   const cases = [
     {
@@ -311,4 +332,29 @@ test('a manually blocked session does not stop observation or clicks in a new se
   assert.equal(clicks.length, 2);
   assert.equal(watcher.state.blockedContinuation.has('target-a:session-a'), true);
   assert.equal(watcher.state.inFlight.sessionKey, sessionB);
+});
+
+test('a none observed in session B cannot clear session A manual block', async () => {
+  const { clicks, watcher } = setup();
+  const originalA = candidate();
+  await invoke(watcher, originalA);
+  assert.equal(await watcher.processObservation(unsafe()), 'manual_intervention_required');
+
+  const sessionB = 'target-a:session-b';
+  const observationB = candidate({
+    sessionKey: sessionB,
+    candidateKey: `${sessionB}:101:201:20`,
+  });
+  assert.equal(await watcher.processObservation(observationB), 'waiting');
+  assert.equal(await watcher.processObservation(none()), 'waiting');
+  assert.equal(watcher.state.blockedContinuation.has(originalA.sessionKey), true);
+
+  const rerenderedA = candidate({
+    candidateKey: 'target-a:session-a:301:401:20',
+    promptBackendId: 301,
+    buttonBackendId: 401,
+  });
+  assert.equal(await watcher.processObservation(rerenderedA), 'blocked');
+  assert.equal(await watcher.processObservation(rerenderedA), 'blocked');
+  assert.equal(clicks.length, 1);
 });

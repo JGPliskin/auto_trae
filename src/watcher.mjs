@@ -31,6 +31,7 @@ export class ContinueWatcher {
     this.now = now;
     this.clickCandidate = clickCandidate;
     this.logger = logger;
+    this.renderedSessionKey = undefined;
     this.state = {
       sessionLedgers: new Map(),
       stableCandidate: undefined,
@@ -87,6 +88,14 @@ export class ContinueWatcher {
     return 'blocked';
   }
 
+  async succeedVerification(inFlight) {
+    this.state.inFlight = undefined;
+    this.state.blockedContinuation.delete(inFlight.sessionKey);
+    this.resetStability();
+    await this.emit('verification_succeeded', inFlight);
+    return 'verification_succeeded';
+  }
+
   async verifyInFlight(observation) {
     const inFlight = this.state.inFlight;
 
@@ -103,15 +112,18 @@ export class ContinueWatcher {
       return this.failVerification('verification_timeout');
     }
 
-    if (observation.kind === 'none') {
-      this.state.inFlight = undefined;
-      this.state.blockedContinuation.delete(inFlight.sessionKey);
-      this.resetStability();
-      await this.emit('verification_succeeded', inFlight);
-      return 'verification_succeeded';
+    if (isSafeCandidate(observation)) {
+      if (observation.prompt.backendNodeId !== inFlight.originalPromptBackendId) {
+        return this.succeedVerification(inFlight);
+      }
+      return 'waiting';
     }
 
-    return 'waiting';
+    if (this.renderedSessionKey === inFlight.sessionKey) {
+      return this.succeedVerification(inFlight);
+    }
+
+    return this.failVerification('verification_confirmation_lost');
   }
 
   async processDryRun(observation) {
@@ -136,7 +148,9 @@ export class ContinueWatcher {
 
   async processLive(observation) {
     if (!isSafeCandidate(observation)) {
-      if (observation?.kind === 'none') this.state.blockedContinuation.clear();
+      if (observation?.kind === 'none' && this.renderedSessionKey) {
+        this.state.blockedContinuation.delete(this.renderedSessionKey);
+      }
       this.resetStability();
       return 'waiting';
     }
@@ -201,6 +215,7 @@ export class ContinueWatcher {
   }
 
   async processObservation(observation) {
+    if (isSafeCandidate(observation)) this.renderedSessionKey = observation.sessionKey;
     if (this.state.inFlight) return this.verifyInFlight(observation);
     if (this.mode === 'dry-run') return this.processDryRun(observation);
     return this.processLive(observation);
