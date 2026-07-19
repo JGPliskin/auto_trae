@@ -353,10 +353,9 @@ export function analyzeCandidate({ targetId, axNodes, domRoot, boxModels }) {
     && isDescendantOrSelf(dom.nodes.get(backendNodeId(node)), pair.node, dom.parents)
   ));
   if (regionPrompts.length !== 1 || regionButtons.length !== 1) {
+    // AX may expose historical or virtualized prompts outside the proven button region.
+    // Region-local counts above keep same-card ambiguity fail-closed.
     return emptyObservation('unsafe', 'ambiguous_pair');
-  }
-  if (prompts.some((node) => node !== pair.promptNode)) {
-    return emptyObservation('unsafe', 'unmatched_signature');
   }
   if (!Number.isInteger(pair.node.backendNodeId)) {
     return emptyObservation('unsafe', 'missing_backend_node_id');

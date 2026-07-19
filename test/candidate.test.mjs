@@ -176,7 +176,7 @@ test('MAX_REGION_DISTANCE is eight because live distance six gets only two wrapp
   assert.deepEqual([rejected.kind, rejected.reason], ['unsafe', 'region_distance_exceeded']);
 });
 
-test('multiple qualifying pairs or a visible unmatched signature is unsafe', () => {
+test('multiple qualifying pairs or an extra signature in the proven region is unsafe', () => {
   const signature = APPROVED_SIGNATURE_INPUTS[0];
   const ambiguous = analyzeCandidate(makeObservationFixture({
     promptName: signature,
@@ -184,11 +184,23 @@ test('multiple qualifying pairs or a visible unmatched signature is unsafe', () 
   }));
   const unmatched = analyzeCandidate(makeObservationFixture({
     promptName: signature,
-    unmatchedPrompt: true,
+    unmatchedPromptInRegion: true,
   }));
 
   assert.deepEqual([ambiguous.kind, ambiguous.reason], ['unsafe', 'ambiguous_pair']);
-  assert.deepEqual([unmatched.kind, unmatched.reason], ['unsafe', 'unmatched_signature']);
+  assert.deepEqual([unmatched.kind, unmatched.reason], ['unsafe', 'ambiguous_pair']);
+});
+
+test('ignores an unmatched prompt outside the proven button region', () => {
+  const observation = analyzeCandidate(makeObservationFixture({
+    promptName: APPROVED_SIGNATURE_INPUTS[0],
+    unmatchedPrompt: true,
+  }));
+
+  assert.equal(observation.kind, 'candidate');
+  assert.equal(observation.reason, 'candidate_proven');
+  assert.equal(observation.prompt.backendNodeId, IDS.prompt);
+  assert.equal(observation.continueButton.backendNodeId, IDS.button);
 });
 
 test('never pairs a prompt and button across a contentDocument boundary', () => {

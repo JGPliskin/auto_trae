@@ -52,6 +52,7 @@ export function makeObservationFixture({
   pairCount = 1,
   sessionIds = ['session-a'],
   unmatchedPrompt = false,
+  unmatchedPromptInRegion = false,
   deepExtraButton = false,
   promptIdBase = IDS.prompt,
   buttonIdBase = IDS.button,
@@ -89,6 +90,20 @@ export function makeObservationFixture({
       { backendNodeId: IDS.extraButton, nodeName: 'BUTTON' },
       MAX_DEEP_BUTTON_HOPS,
       4_000,
+    ));
+  }
+
+  if (unmatchedPromptInRegion) {
+    axNodes.push(axNode({
+      backendNodeId: IDS.unmatchedPrompt,
+      role: 'StaticText',
+      name: promptName,
+    }));
+    boxModels.set(IDS.unmatchedPrompt, visibleBox());
+    regionChildren.push(branch(
+      { backendNodeId: IDS.unmatchedPrompt, nodeName: '#text' },
+      2,
+      5_000,
     ));
   }
 
