@@ -156,18 +156,19 @@ export class ContinueWatcher {
     }
 
     const ledger = this.ledger(observation.sessionKey);
+    if (this.state.blockedContinuation.has(observation.sessionKey)) {
+      this.resetStability();
+      return 'blocked';
+    }
+
     if (ledger.continueClicks >= this.maxContinueClicks) {
       this.resetStability();
+      if (this.state.invokedCandidateKeys.has(observation.candidateKey)) return 'blocked';
       if (!ledger.exhaustedReported) {
         ledger.exhaustedReported = true;
         await this.emit('manual_intervention_required', observation, 'click_cap_exhausted');
         return 'manual_intervention_required';
       }
-      return 'blocked';
-    }
-
-    if (this.state.blockedContinuation.has(observation.sessionKey)) {
-      this.resetStability();
       return 'blocked';
     }
 

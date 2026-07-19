@@ -231,6 +231,43 @@ test('click caps are per session, report once, and leave a new session budget un
   });
 });
 
+test('a failed third invocation stays blocked without a duplicate cap manual event', async () => {
+  const { clicks, events, watcher } = setup({ maxContinueClicks: 3 });
+  const sessionKey = 'target-a:session-a';
+
+  for (let index = 1; index <= 2; index += 1) {
+    await invoke(watcher, candidate({
+      sessionKey,
+      candidateKey: `${sessionKey}:${index}:20${index}:20`,
+      promptBackendId: index,
+      buttonBackendId: 200 + index,
+    }));
+    assert.equal(await watcher.processObservation(none()), 'verification_succeeded');
+  }
+
+  const third = candidate({
+    sessionKey,
+    candidateKey: `${sessionKey}:3:203:20`,
+    promptBackendId: 3,
+    buttonBackendId: 203,
+  });
+  await invoke(watcher, third);
+  assert.equal(await watcher.processObservation(unsafe()), 'manual_intervention_required');
+
+  const rerenderedThird = candidate({
+    sessionKey,
+    candidateKey: `${sessionKey}:3:403:20`,
+    promptBackendId: 3,
+    buttonBackendId: 403,
+  });
+  const result = await watcher.processObservation(rerenderedThird);
+
+  assert.equal(clicks.length, 3);
+  assert.deepEqual(manualEvents(events).map(({ reason }) => reason), ['verification_unsafe']);
+  assert.equal(result, 'blocked');
+  assert.equal(watcher.state.sessionLedgers.get(sessionKey).exhaustedReported, false);
+});
+
 test('changed output alone is not proof; disappearance before 30 seconds is', async () => {
   const { clock, events, watcher } = setup();
   const original = candidate();
