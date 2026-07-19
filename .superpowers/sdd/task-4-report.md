@@ -371,3 +371,113 @@ misclassified as a new budget-consuming entity and produce duplicate events.
 
 None blocking. No Trae process or endpoint was contacted. User-owned modified
 and untracked design/research files were not edited and will not be staged.
+
+## Final re-review fix — sessionless none is never verification proof
+
+This section supersedes the earlier review-fix statement that a sessionless
+`none` could be associated with the last safely observed rendered session.
+Missing session identity is not evidence and is no longer inferred from prior
+watcher state.
+
+### Issue fixed
+
+The watcher retained `renderedSessionKey` from the candidate that initiated a
+click. A later Task 3 `none` observation has `sessionKey: undefined`, but the
+retained key caused it to call `succeedVerification`, clear `inFlight`, and
+remove the continuation block. The original prompt could then re-render under
+a new candidate key and pass another action gate.
+
+The watcher no longer stores or consults rendered-session context. A `none`
+observation can verify an in-flight action or clear a block only when the
+observation itself explicitly carries the matching `sessionKey`. A safe
+same-session candidate with a different prompt backend ID remains valid
+replacement proof and still resets stability before any later action.
+
+### RED evidence
+
+The regression and explicit session-aware disappearance fixtures were added
+before changing production code. The focused watcher run:
+
+```powershell
+node --test test/watcher.test.mjs
+```
+
+failed for the expected reason:
+
+```text
+tests 19
+pass 18
+fail 1
+duration_ms 763.1128
+```
+
+```text
+actual:   verification_succeeded
+expected: waiting
+```
+
+### GREEN evidence
+
+After removing the inferred-session path, the watcher suite passed:
+
+```text
+tests 19
+pass 19
+fail 0
+duration_ms 860.1023
+```
+
+Fresh required focused verification passed:
+
+```powershell
+node --test test/logger.test.mjs test/watcher.test.mjs
+```
+
+```text
+tests 24
+pass 24
+fail 0
+duration_ms 1561.9548
+```
+
+Fresh full-suite verification passed:
+
+```powershell
+node --test
+```
+
+```text
+tests 52
+pass 52
+fail 0
+duration_ms 6574.8781
+```
+
+Both required final runs exited normally with no warnings, diagnostics,
+cancelled/skipped tests, timeout symptoms, or hanging handles.
+
+### Self-review and reusable lesson
+
+- The new regression invokes Session A, feeds the exact sessionless `none`
+  shape produced by Task 3, and verifies that no success event is emitted and
+  both `inFlight` and the session block remain intact.
+- A same-prompt re-render with a new candidate/button identity remains in the
+  verification state on repeated scans and performs no second click.
+- Existing successful disappearance tests now carry an explicit same-session
+  key, proving that the safe session-aware path remains supported.
+- The same-session different-prompt-ID replacement regression remains green
+  and still requires a fresh two-scan action gate afterward.
+- The Session A blocked → Session B candidate/sessionless-none isolation test
+  remains unchanged and green.
+- No public API or prior-task source file changed. Task 3's sessionless `none`
+  remains accepted as an observation but is treated only as non-proof while an
+  action is in flight.
+
+Reusable safety rule: never reconstruct missing authorization or identity
+evidence from cached prior context. An absent scope must remain unknown unless
+the current observation carries an explicit, matching identity.
+
+### Final re-review fix concerns
+
+None blocking. No Trae process or endpoint was contacted. User-owned modified
+and untracked design/research files were not edited and will not be staged.

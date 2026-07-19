@@ -33,11 +33,11 @@ function candidate({
   };
 }
 
-function none() {
+function none({ sessionKey } = {}) {
   return {
     kind: 'none',
     reason: 'no_signature',
-    sessionKey: undefined,
+    sessionKey,
     candidateKey: undefined,
     prompt: undefined,
     continueButton: undefined,
@@ -187,7 +187,7 @@ test('an invoked key and a re-rendered visible blocked signature cannot be click
   assert.equal(clicks.length, 1);
   assert.equal(manualEvents(events).length, 1);
 
-  assert.equal(await watcher.processObservation(none()), 'waiting');
+  assert.equal(await watcher.processObservation(none({ sessionKey: original.sessionKey })), 'waiting');
   assert.equal(await watcher.processObservation(original), 'waiting');
   assert.equal(await watcher.processObservation(original), 'blocked');
   assert.equal(clicks.length, 1);
@@ -204,7 +204,10 @@ test('click caps are per session, report once, and leave a new session budget un
       candidateKey: `${sessionA}:${index}:201:20`,
       promptBackendId: index,
     }));
-    assert.equal(await watcher.processObservation(none()), 'verification_succeeded');
+    assert.equal(
+      await watcher.processObservation(none({ sessionKey: sessionA })),
+      'verification_succeeded',
+    );
   }
 
   const fourth = candidate({
@@ -242,7 +245,10 @@ test('a failed third invocation stays blocked without a duplicate cap manual eve
       promptBackendId: index,
       buttonBackendId: 200 + index,
     }));
-    assert.equal(await watcher.processObservation(none()), 'verification_succeeded');
+    assert.equal(
+      await watcher.processObservation(none({ sessionKey })),
+      'verification_succeeded',
+    );
   }
 
   const third = candidate({
@@ -277,10 +283,36 @@ test('changed output alone is not proof; disappearance before 30 seconds is', as
   assert.equal(await watcher.processObservation(candidate({ outputRevision: 'changed' })), 'waiting');
   assert.equal(events.some(({ event }) => event === 'verification_succeeded'), false);
 
-  assert.equal(await watcher.processObservation(none()), 'verification_succeeded');
+  assert.equal(
+    await watcher.processObservation(none({ sessionKey: original.sessionKey })),
+    'verification_succeeded',
+  );
   assert.equal(events.filter(({ event }) => event === 'verification_succeeded').length, 1);
   assert.equal(watcher.state.inFlight, undefined);
   assert.equal(watcher.state.blockedContinuation.has(original.sessionKey), false);
+});
+
+test('a sessionless none cannot verify or unblock an in-flight continuation', async () => {
+  const { clicks, events, watcher } = setup();
+  const original = candidate();
+  await invoke(watcher, original);
+
+  assert.equal(await watcher.processObservation(none()), 'waiting');
+  assert.equal(events.some(({ event }) => event === 'verification_succeeded'), false);
+  assert.equal(watcher.state.inFlight.candidateKey, original.candidateKey);
+  assert.equal(watcher.state.blockedContinuation.has(original.sessionKey), true);
+
+  const rerendered = candidate({
+    candidateKey: 'target-a:session-a:101:401:20',
+    promptBackendId: 101,
+    buttonBackendId: 401,
+  });
+  assert.equal(await watcher.processObservation(rerendered), 'waiting');
+  assert.equal(await watcher.processObservation(rerendered), 'waiting');
+  assert.equal(clicks.length, 1);
+  assert.equal(events.some(({ event }) => event === 'verification_succeeded'), false);
+  assert.equal(watcher.state.inFlight.candidateKey, original.candidateKey);
+  assert.equal(watcher.state.blockedContinuation.has(original.sessionKey), true);
 });
 
 test('a different prompt ID in the same session verifies replacement before a fresh two-scan gate', async () => {

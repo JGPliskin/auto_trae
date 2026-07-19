@@ -31,7 +31,6 @@ export class ContinueWatcher {
     this.now = now;
     this.clickCandidate = clickCandidate;
     this.logger = logger;
-    this.renderedSessionKey = undefined;
     this.state = {
       sessionLedgers: new Map(),
       stableCandidate: undefined,
@@ -119,10 +118,11 @@ export class ContinueWatcher {
       return 'waiting';
     }
 
-    if (this.renderedSessionKey === inFlight.sessionKey) {
+    if (observation.sessionKey === inFlight.sessionKey) {
       return this.succeedVerification(inFlight);
     }
 
+    if (observation.sessionKey === undefined) return 'waiting';
     return this.failVerification('verification_confirmation_lost');
   }
 
@@ -148,8 +148,8 @@ export class ContinueWatcher {
 
   async processLive(observation) {
     if (!isSafeCandidate(observation)) {
-      if (observation?.kind === 'none' && this.renderedSessionKey) {
-        this.state.blockedContinuation.delete(this.renderedSessionKey);
+      if (observation?.kind === 'none' && observation.sessionKey) {
+        this.state.blockedContinuation.delete(observation.sessionKey);
       }
       this.resetStability();
       return 'waiting';
@@ -216,7 +216,6 @@ export class ContinueWatcher {
   }
 
   async processObservation(observation) {
-    if (isSafeCandidate(observation)) this.renderedSessionKey = observation.sessionKey;
     if (this.state.inFlight) return this.verifyInFlight(observation);
     if (this.mode === 'dry-run') return this.processDryRun(observation);
     return this.processLive(observation);
