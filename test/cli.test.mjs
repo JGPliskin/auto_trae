@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { runCli } from '../src/cli.mjs';
+import { renderProcessError, runCli } from '../src/cli.mjs';
 import { usage } from '../src/config.mjs';
 
 const cliPath = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
@@ -41,8 +41,9 @@ function none(sessionKey = 'target-a:session-a') {
   };
 }
 
-function setup({ clickImpl, discoverImpl, observeImpl, sleepImpl } = {}) {
+function setup({ clickImpl, discoverImpl, eventImpl, observeImpl, sleepImpl } = {}) {
   const calls = {
+    clientCreations: 0,
     clicks: [],
     closes: 0,
     discoveries: 0,
@@ -64,7 +65,10 @@ function setup({ clickImpl, discoverImpl, observeImpl, sleepImpl } = {}) {
       calls.discoveries += 1;
       return discoverImpl ? discoverImpl(calls.discoveries) : target;
     },
-    createCdpClient() { return client; },
+    createCdpClient() {
+      calls.clientCreations += 1;
+      return client;
+    },
     async observe() {
       calls.observations += 1;
       return observeImpl ? observeImpl(calls.observations) : candidate();
@@ -75,7 +79,10 @@ function setup({ clickImpl, discoverImpl, observeImpl, sleepImpl } = {}) {
     },
     now: () => 0,
     logger: {
-      async event(entry) { calls.events.push(entry); },
+      async event(entry) {
+        calls.events.push(entry);
+        await eventImpl?.(entry);
+      },
     },
     output(line) { calls.output.push(line); },
   };
@@ -293,6 +300,80 @@ test('AbortSignal closes an attached client immediately and exits foreground cle
   assert.equal(context.calls.sleeps.length, 0);
 });
 
+test('abort during slow discovery returns before discovery settles and never creates a client', async () => {
+  const controller = new AbortController();
+  let discoveryStarted;
+  let resolveDiscovery;
+  const started = new Promise((resolve) => { discoveryStarted = resolve; });
+  const context = setup({
+    discoverImpl: () => new Promise((resolve) => {
+      resolveDiscovery = resolve;
+      discoveryStarted();
+    }),
+  });
+  let settled = false;
+  const running = runCli({ argv: [], signal: controller.signal, ...context.dependencies })
+    .then(() => { settled = true; });
+
+  await started;
+  controller.abort();
+  await Promise.resolve();
+  await Promise.resolve();
+  const settledBeforeDiscovery = settled;
+  resolveDiscovery(target);
+  await running;
+
+  assert.equal(settledBeforeDiscovery, true);
+  assert.equal(context.calls.clientCreations, 0);
+  assert.equal(context.calls.observations, 0);
+  assert.equal(context.calls.clicks.length, 0);
+});
+
+test('a discovery rejection after abort is consumed without unhandled rejection', async () => {
+  const controller = new AbortController();
+  let rejectDiscovery;
+  const context = setup({
+    discoverImpl: () => new Promise((_, reject) => {
+      rejectDiscovery = reject;
+    }),
+  });
+  const unhandled = [];
+  const handleUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', handleUnhandled);
+
+  try {
+    const running = runCli({ argv: [], signal: controller.signal, ...context.dependencies });
+    await Promise.resolve();
+    controller.abort();
+    await running;
+    rejectDiscovery(new Error('late sensitive discovery failure'));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(unhandled, []);
+    assert.equal(context.calls.clientCreations, 0);
+  } finally {
+    process.removeListener('unhandledRejection', handleUnhandled);
+  }
+});
+
+test('abort from connected logging prevents the first observation and closes the client', async () => {
+  const controller = new AbortController();
+  const context = setup({
+    eventImpl: async ({ event, connectionState }) => {
+      if (event === 'connection_state_changed' && connectionState === 'connected') {
+        controller.abort();
+      }
+    },
+  });
+
+  await runCli({ argv: [], signal: controller.signal, ...context.dependencies });
+
+  assert.equal(context.calls.clientCreations, 1);
+  assert.equal(context.calls.closes, 1);
+  assert.equal(context.calls.observations, 0);
+  assert.equal(context.calls.clicks.length, 0);
+});
+
 test('process-level --help prints exported usage and exits before foreground startup', () => {
   const result = spawnSync(process.execPath, [cliPath, '--help'], { encoding: 'utf8' });
 
@@ -307,4 +388,13 @@ test('process entry parses invalid configuration and exits with a usage error', 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^Usage: port must be an integer/);
   assert.equal(result.stdout, '');
+});
+
+test('unexpected process errors render a fixed redacted message', () => {
+  const secret = 'socket exploded at C:\\Users\\private\\chat-secret';
+
+  const rendered = renderProcessError(new Error(secret));
+
+  assert.equal(rendered, 'Foreground watcher failed (runtime_failure)');
+  assert.equal(rendered.includes(secret), false);
 });

@@ -11,6 +11,28 @@ const traeTarget = {
   webSocketDebuggerUrl: 'ws://127.0.0.1:39240/devtools/page/trae',
 };
 
+class TrackingWebSocket extends FakeWebSocket {
+  constructor(url) {
+    super(url);
+    this.listeners = new Map();
+  }
+
+  addEventListener(type, listener, options) {
+    super.addEventListener(type, listener, options);
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(listener);
+  }
+
+  removeEventListener(type, listener, options) {
+    super.removeEventListener(type, listener, options);
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  listenerCount(type) {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+}
+
 test('discovers exactly one loopback TRAE Work page target', async () => {
   const { calls, fetchImpl } = fakeFetch([
     { type: 'page', title: 'Other', url: 'https://example.test', webSocketDebuggerUrl: 'ws://127.0.0.1/other' },
@@ -114,6 +136,42 @@ test('exposes an awaitable attachment boundary before the first CDP request', as
   socket.open();
   await attachment;
   assert.equal(attached, true);
+});
+
+test('waitUntilOpen rejects a pre-open socket error and cleans temporary listeners', async () => {
+  const socket = new TrackingWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
+  const attachment = client.waitUntilOpen();
+
+  assert.deepEqual(
+    ['open', 'close', 'error'].map((type) => socket.listenerCount(type)),
+    [1, 2, 2],
+  );
+  socket.dispatchEvent(new Event('error'));
+
+  await assert.rejects(attachment, /socket error/);
+  assert.deepEqual(
+    ['open', 'close', 'error'].map((type) => socket.listenerCount(type)),
+    [0, 1, 1],
+  );
+  socket.open();
+  await assert.rejects(attachment, /socket error/);
+});
+
+test('waitUntilOpen rejects a pre-open close and cleans temporary listeners', async () => {
+  const socket = new TrackingWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
+  const attachment = client.waitUntilOpen();
+
+  socket.close();
+
+  await assert.rejects(attachment, /socket closed/);
+  assert.deepEqual(
+    ['open', 'close', 'error'].map((type) => socket.listenerCount(type)),
+    [0, 1, 1],
+  );
+  socket.dispatchEvent(new Event('error'));
+  await assert.rejects(attachment, /socket closed/);
 });
 
 test('uses the thin protocol helpers and a fresh object for the exact click function', async () => {

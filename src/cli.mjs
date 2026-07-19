@@ -7,6 +7,7 @@ import { observe as observeDefault } from './observer.mjs';
 import { ContinueWatcher } from './watcher.mjs';
 
 const RECONNECT_DELAYS_MS = [1_500, 3_000, 6_000, 15_000];
+const ABORTED = Symbol('aborted');
 
 function renderEvent(entry) {
   const detail = entry.connectionState && entry.reason
@@ -19,6 +20,14 @@ function connectionReason(error) {
   if (/socket closed/i.test(error?.message)) return 'socket_closed';
   if (/timeout/i.test(error?.message)) return 'request_timeout';
   return 'connection_failed';
+}
+
+function renderUsageError(error) {
+  return typeof error?.message === 'string' ? error.message : 'Usage: invalid options';
+}
+
+export function renderProcessError() {
+  return 'Foreground watcher failed (runtime_failure)';
 }
 
 function defaultSleep(ms, { signal } = {}) {
@@ -35,6 +44,28 @@ function defaultSleep(ms, { signal } = {}) {
     } else {
       signal?.addEventListener('abort', finish, { once: true });
     }
+  });
+}
+
+function waitForAbort(value, signal) {
+  if (!signal) return Promise.resolve(value);
+  if (signal.aborted) return Promise.resolve(ABORTED);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, result) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', handleAbort);
+      callback(result);
+    };
+    const handleAbort = () => finish(resolve, ABORTED);
+
+    signal.addEventListener('abort', handleAbort, { once: true });
+    Promise.resolve(value).then(
+      (result) => finish(resolve, result),
+      (error) => finish(reject, error),
+    );
   });
 }
 
@@ -89,7 +120,11 @@ export async function runCli({
     while (!signal?.aborted) {
       let stage = 'discovery';
       try {
-        const target = await discoverTraeTarget({ endpoint: config.endpoint });
+        const target = await waitForAbort(
+          discoverTraeTarget({ endpoint: config.endpoint }),
+          signal,
+        );
+        if (target === ABORTED || signal?.aborted) break;
         if (target?.kind === 'unavailable' || target?.kind === 'ambiguous') {
           await eventLogger.event({
             event: 'connection_state_changed',
@@ -99,17 +134,21 @@ export async function runCli({
         } else {
           stage = 'connection';
           client = createCdpClient({ webSocketDebuggerUrl: target.webSocketDebuggerUrl });
-          await client.waitUntilOpen?.();
-          if (signal?.aborted) break;
-          await eventLogger.event({
-            event: 'connection_state_changed',
-            connectionState: 'connected',
-            targetId: target.id,
-          });
+          const attachment = await waitForAbort(client.waitUntilOpen?.(), signal);
+          if (attachment === ABORTED || signal?.aborted) break;
+          const connectedLog = await waitForAbort(
+            eventLogger.event({
+              event: 'connection_state_changed',
+              connectionState: 'connected',
+              targetId: target.id,
+            }),
+            signal,
+          );
+          if (connectedLog === ABORTED || signal?.aborted) break;
           reconnectAttempt = 0;
           do {
-            const observation = await observe({ client, targetId: target.id });
-            if (signal?.aborted) break;
+            const observation = await waitForAbort(observe({ client, targetId: target.id }), signal);
+            if (observation === ABORTED || signal?.aborted) break;
             await watcher.processObservation(observation);
             if (observation?.kind === 'unsafe' && observation.reason === 'ax_unavailable') {
               throw new Error('CDP connection failed');
@@ -153,13 +192,21 @@ async function main() {
     return;
   }
 
+  try {
+    parseArgs(argv);
+  } catch (error) {
+    console.error(renderUsageError(error));
+    process.exitCode = 1;
+    return;
+  }
+
   const controller = new AbortController();
   const handleInterrupt = () => controller.abort();
   process.once('SIGINT', handleInterrupt);
   try {
     await runCli({ argv, signal: controller.signal });
   } catch (error) {
-    console.error(error?.message ?? 'Foreground watcher failed');
+    console.error(renderProcessError(error));
     process.exitCode = 1;
   } finally {
     process.removeListener('SIGINT', handleInterrupt);

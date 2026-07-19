@@ -160,3 +160,110 @@ None blocking. The necessary CDP readiness extension is intentionally small
 and reported above. User-owned modified/untracked research, design, context,
 and plan files were not edited or staged. No real endpoint or Trae process was
 contacted.
+
+## Review fix — abort boundaries, process redaction, and attachment coverage
+
+### Issues fixed
+
+1. Discovery was awaited directly. Abort closed only an existing client, so a
+   slow discovery could return a target after abort and still create a
+   WebSocket. The CLI now races discovery, attachment, connected logging, and
+   observation against AbortSignal through one listener-cleaning boundary. It
+   checks the signal before every later CDP step, returns while a slow injected
+   operation is still pending, and consumes a delayed rejection without an
+   unhandled promise rejection.
+2. Process main previously printed arbitrary `error.message`. It now validates
+   arguments in a parser-only catch where controlled Usage details are allowed;
+   every unexpected runtime failure renders exactly
+   `Foreground watcher failed (runtime_failure)`.
+3. `waitUntilOpen()` already rejected and cleaned up correctly on pre-open
+   error/close, but only its open path was covered. Tracking fake-WebSocket
+   regressions now prove rejection, temporary-listener cleanup, and that later
+   events cannot change the settled result.
+
+### RED evidence
+
+The two abort regressions were written before the abort-aware boundary and run
+with:
+
+```powershell
+node --test --test-name-pattern="abort during slow discovery|abort from connected logging" test/cli.test.mjs
+```
+
+```text
+tests 2
+pass 0
+fail 2
+duration_ms 948.0592
+```
+
+The failures showed both defects directly: `runCli` had not settled before
+discovery completed (`false !== true`), and connected logging followed by
+abort still made one observation (`1 !== 0`).
+
+The unexpected-error test was then added before the rendering helper. Its RED
+run failed module instantiation with:
+
+```text
+SyntaxError: The requested module '../src/cli.mjs' does not provide an export named 'renderProcessError'
+tests 1
+pass 0
+fail 1
+duration_ms 757.9387
+```
+
+The waitUntilOpen review item was a coverage-only gap: both new
+characterization tests passed on their first run, so no production CDP change
+was warranted or made. Their first result was `tests 2; pass 2; fail 0`.
+
+### GREEN evidence
+
+Fresh combined focused verification passed:
+
+```powershell
+node --test test/cli.test.mjs test/cdp-client.test.mjs
+```
+
+```text
+tests 25
+pass 25
+fail 0
+duration_ms 3113.1447
+```
+
+Fresh full-suite verification passed:
+
+```powershell
+node --test
+```
+
+```text
+tests 69
+pass 69
+fail 0
+duration_ms 6762.555
+```
+
+Both final commands exited normally with no warnings, failures,
+cancellations, skips, diagnostics, timeout symptoms, or hanging handles.
+
+### Files and self-review
+
+- `src/cli.mjs`: abort-aware race boundary, post-await abort checks, controlled
+  Usage handling, and fixed unexpected-runtime rendering.
+- `test/cli.test.mjs`: slow-discovery abort, delayed-rejection handling,
+  connected-to-observe abort, and fixed error-rendering regressions.
+- `test/cdp-client.test.mjs`: pre-open error/close and listener cleanup tests.
+- `.superpowers/sdd/task-5-report.md`: this appended review-fix record.
+
+The race helper attaches both fulfillment and rejection handlers to the
+underlying operation before yielding; an abort settles only the wrapper while
+late operation rejection remains handled. Every wrapper removes its abort
+listener on either outcome. The current client is still closed immediately by
+the outer abort handler, and aborted observation results never reach the
+watcher or click boundary. No raw runtime error reaches stderr. User-owned
+research/design/context/plan files remain untouched and unstaged.
+
+### Review-fix concerns
+
+None blocking. No real endpoint or Trae process was contacted.
