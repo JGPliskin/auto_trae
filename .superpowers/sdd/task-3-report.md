@@ -128,3 +128,83 @@ fail 0
 
 None blocking. Node's full test discovery reports fixture/helper `.mjs` files
 as successful no-op test modules; they perform no network or Trae access.
+
+## Important review fixes
+
+### Issues fixed
+
+1. AX role matching now performs only outer-whitespace trimming and case
+   normalization before exact comparison. It no longer deletes internal
+   spaces, hyphens, or underscores, so malformed near-matches such as
+   `static text` and `but-ton` fail closed while the fixture roles
+   `StaticText` and `button` remain accepted.
+2. Raw AX and DOM protocol nodes no longer escape the candidate module.
+   Private selectors/indexes retain raw snapshots only while proving a
+   candidate. Exported AX descriptors contain backend IDs and derived stable
+   booleans; exported DOM descriptors contain backend IDs and structural
+   parent relationships, never `name.value`, `nodeValue`, or original node
+   identity. The observer now consumes the sanitized backend-ID descriptors.
+
+### RED evidence
+
+The two focused regressions were added before the fix and run with:
+
+```powershell
+node --test test/candidate.test.mjs
+```
+
+The expected RED run reported:
+
+```text
+tests 11
+pass 8
+fail 3
+```
+
+The failures showed that `static text` incorrectly produced
+`candidate_proven`, AX selection returned original nodes containing
+`name.value`, and the DOM index returned original protocol nodes.
+
+### GREEN and final verification
+
+After the minimal fix, the candidate suite passed 11/11. Fresh required
+focused verification passed:
+
+```powershell
+node --test test/candidate.test.mjs test/observer.test.mjs
+```
+
+```text
+tests 14
+pass 14
+fail 0
+```
+
+Fresh full-suite verification passed:
+
+```powershell
+node --test
+```
+
+```text
+tests 28
+pass 28
+fail 0
+```
+
+Both test runs completed without warnings or diagnostic leakage.
+`git diff --check` also completed without errors.
+
+### Fix files
+
+- `src/candidate.mjs`: exact fail-closed role normalization, private raw AX
+  selection/DOM indexing, and sanitized exported descriptors.
+- `src/observer.mjs`: consumes sanitized `backendNodeId` descriptors.
+- `test/candidate.test.mjs`: malformed-role and raw-protocol-escape
+  regressions, plus downstream descriptor assertions.
+- `.superpowers/sdd/task-3-report.md`: this review-fix record.
+
+### Fix concerns
+
+None. No real endpoint or Trae process was contacted, and no user-owned
+research/design file was modified or staged.

@@ -27,11 +27,11 @@ export async function observe({ client, targetId }) {
   }
 
   const relevantNodes = [...prompts, ...buttons];
-  if (relevantNodes.some((node) => !Number.isInteger(node?.backendDOMNodeId))) {
+  if (relevantNodes.some((node) => !Number.isInteger(node?.backendNodeId))) {
     return analyzeCandidate({ targetId, axNodes, domRoot: undefined, boxModels: new Map() });
   }
 
-  const backendNodeIds = [...new Set(relevantNodes.map((node) => node.backendDOMNodeId))];
+  const backendNodeIds = [...new Set(relevantNodes.map((node) => node.backendNodeId))];
   let requests;
   try {
     requests = [

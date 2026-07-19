@@ -60,8 +60,59 @@ test('AX filtering requires static text and an exact normalized action name', ()
     axNode({ backendNodeId: 6, role: 'link', name: 'Continue' }),
   ]);
 
-  assert.deepEqual(selected.prompts.map((node) => node.backendDOMNodeId), [1]);
-  assert.deepEqual(selected.buttons.map((node) => node.backendDOMNodeId), [3, 4]);
+  assert.deepEqual(selected.prompts.map((node) => node.backendNodeId), [1]);
+  assert.deepEqual(selected.buttons.map((node) => node.backendNodeId), [3, 4]);
+});
+
+test('AX role matching rejects malformed near-matches while allowing casing and outer whitespace only', () => {
+  const signature = APPROVED_SIGNATURE_INPUTS[0];
+
+  for (const role of ['static text', 'static-text', 'static_text']) {
+    const fixture = makeObservationFixture({ promptName: signature });
+    fixture.axNodes[0].role.value = role;
+    assert.deepEqual(
+      [analyzeCandidate(fixture).kind, analyzeCandidate(fixture).reason],
+      ['none', 'no_signature'],
+      role,
+    );
+  }
+
+  for (const role of ['but ton', 'but-ton', 'but_ton']) {
+    const fixture = makeObservationFixture({ promptName: signature });
+    fixture.axNodes[1].role.value = role;
+    assert.deepEqual(
+      [analyzeCandidate(fixture).kind, analyzeCandidate(fixture).reason],
+      ['unsafe', 'unmatched_signature'],
+      role,
+    );
+  }
+
+  const safelyNormalized = makeObservationFixture({ promptName: signature });
+  safelyNormalized.axNodes[0].role.value = '  statictext  ';
+  safelyNormalized.axNodes[1].role.value = '  BUTTON  ';
+  assert.equal(analyzeCandidate(safelyNormalized).kind, 'candidate');
+});
+
+test('exported AX and DOM analysis exposes structural descriptors without raw protocol text', () => {
+  const signature = `[redacted-prefix] ${APPROVED_SIGNATURE_INPUTS[0]} [redacted-suffix]`;
+  const promptNode = axNode({ backendNodeId: 1, role: 'StaticText', name: signature });
+  const buttonNode = axNode({ backendNodeId: 2, role: 'button', name: 'Continue' });
+  const selected = findAxCandidates([promptNode, buttonNode]);
+
+  assert.deepEqual(selected, {
+    prompts: [{ backendNodeId: 1, signatureMatches: true }],
+    buttons: [{ backendNodeId: 2, enabled: true }],
+  });
+  assert.notEqual(selected.prompts[0], promptNode);
+  assert.doesNotMatch(JSON.stringify(selected), /redacted-prefix|redacted-suffix|Continue/);
+
+  const tree = makeTraversalTree();
+  tree.children[0].nodeValue = '[redacted-dom-text]';
+  const index = indexDomTree(tree);
+  assert.deepEqual(index.nodes.get(2), { backendNodeId: 2 });
+  assert.notEqual(index.nodes.get(2), tree.children[0]);
+  assert.equal(index.attributes, undefined);
+  assert.doesNotMatch(JSON.stringify([...index.nodes.values()]), /redacted-dom-text/);
 });
 
 test('disabled, missing-ID, failed-box, and zero-area evidence is unsafe', () => {
@@ -94,10 +145,6 @@ test('DOM indexing traverses children, shadow roots, and recursive content docum
   assert.deepEqual([...index.nodes.keys()], [1, 2, 3, 4, 5, 6, 7, 8]);
   assert.equal(index.parents.get(index.nodes.get(4)).backendNodeId, 3);
   assert.equal(index.parents.get(index.nodes.get(8)).backendNodeId, 7);
-  assert.deepEqual(index.attributes.get(index.nodes.get(6)), new Map([
-    ['class', 'inside frame'],
-    ['data-session-id', 'opaque-session'],
-  ]));
 });
 
 test('a unique preferred chat container proves session identity; absent or ambiguous identity is unsafe', () => {

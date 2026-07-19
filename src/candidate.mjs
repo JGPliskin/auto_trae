@@ -22,7 +22,7 @@ function axString(node, property) {
 }
 
 function normalizedRole(node) {
-  return axString(node, 'role').trim().toLowerCase().replace(/[\s_-]/g, '');
+  return axString(node, 'role').trim().toLowerCase();
 }
 
 function normalizedName(node) {
@@ -101,7 +101,7 @@ export function matchesContinuationSignature(value) {
   return typeof value === 'string' && CONTINUATION_SIGNATURE.test(value);
 }
 
-export function findAxCandidates(nodes) {
+function selectAxCandidates(nodes) {
   const safeNodes = Array.isArray(nodes) ? nodes : [];
   return {
     prompts: safeNodes.filter((node) => (
@@ -115,7 +115,21 @@ export function findAxCandidates(nodes) {
   };
 }
 
-export function indexDomTree(root) {
+export function findAxCandidates(nodes) {
+  const selected = selectAxCandidates(nodes);
+  return {
+    prompts: selected.prompts.map((node) => ({
+      backendNodeId: backendNodeId(node),
+      signatureMatches: true,
+    })),
+    buttons: selected.buttons.map((node) => ({
+      backendNodeId: backendNodeId(node),
+      enabled: !isDisabled(node),
+    })),
+  };
+}
+
+function buildDomIndex(root) {
   const nodes = new Map();
   const parents = new Map();
   const attributes = new Map();
@@ -135,8 +149,28 @@ export function indexDomTree(root) {
   return { nodes, parents, attributes };
 }
 
+export function indexDomTree(root) {
+  const rawIndex = buildDomIndex(root);
+  const descriptors = new Map();
+  const descriptorFor = (node) => {
+    if (!descriptors.has(node)) {
+      descriptors.set(node, {
+        backendNodeId: Number.isInteger(node?.backendNodeId) ? node.backendNodeId : undefined,
+      });
+    }
+    return descriptors.get(node);
+  };
+  const nodes = new Map(
+    [...rawIndex.nodes].map(([id, node]) => [id, descriptorFor(node)]),
+  );
+  const parents = new Map(
+    [...rawIndex.parents].map(([node, parent]) => [descriptorFor(node), descriptorFor(parent)]),
+  );
+  return { nodes, parents };
+}
+
 export function analyzeCandidate({ targetId, axNodes, domRoot, boxModels }) {
-  const { prompts, buttons } = findAxCandidates(axNodes);
+  const { prompts, buttons } = selectAxCandidates(axNodes);
   if (prompts.length === 0) return emptyObservation('none', 'no_signature');
 
   const relevantNodes = [...prompts, ...buttons];
@@ -154,7 +188,7 @@ export function analyzeCandidate({ targetId, axNodes, domRoot, boxModels }) {
   if (buttons.length === 0) return emptyObservation('unsafe', 'unmatched_signature');
   if (!domRoot || typeof domRoot !== 'object') return emptyObservation('unsafe', 'dom_unavailable');
 
-  const dom = indexDomTree(domRoot);
+  const dom = buildDomIndex(domRoot);
   if (relevantNodes.some((node) => !dom.nodes.has(backendNodeId(node)))) {
     return emptyObservation('unsafe', 'dom_node_unavailable');
   }
