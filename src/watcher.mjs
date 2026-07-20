@@ -7,12 +7,12 @@ const VERIFICATION_WINDOW_MS = 30_000;
 const CONTINUATION_SIGNATURE = 'continuation_signature';
 
 export class ContinueWatcher {
-  constructor({ mode, maxContinueClicks = 3, now = Date.now, clickCandidate, logger }) {
+  constructor({ mode, maxContinueClicks = 7, now = Date.now, clickCandidate, logger }) {
     if (mode !== 'dry-run' && mode !== 'live') {
       throw new TypeError('Watcher mode must be dry-run or live');
     }
-    if (!Number.isSafeInteger(maxContinueClicks) || maxContinueClicks < 1 || maxContinueClicks > 3) {
-      throw new TypeError('maxContinueClicks must be between 1 and 3');
+    if (!Number.isSafeInteger(maxContinueClicks) || maxContinueClicks < 1) {
+      throw new TypeError('maxContinueClicks must be a positive integer');
     }
     if (typeof clickCandidate !== 'function') throw new TypeError('clickCandidate is required');
     if (typeof logger?.event !== 'function') throw new TypeError('logger.event is required');

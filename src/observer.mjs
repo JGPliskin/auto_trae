@@ -5,10 +5,17 @@ import {
   proveDisappearance,
 } from './candidate.mjs';
 
-function unsafe(reason) {
+function transportReason(error) {
+  if (/socket closed/i.test(error?.message)) return 'socket_closed';
+  if (/timeout/i.test(error?.message)) return 'request_timeout';
+  return 'connection_failed';
+}
+
+function unsafe(reason, error) {
   return {
     kind: 'unsafe',
     reason,
+    ...(error ? { transportReason: transportReason(error) } : {}),
     sessionKey: undefined,
     candidateKey: undefined,
     prompt: undefined,
@@ -17,13 +24,22 @@ function unsafe(reason) {
   };
 }
 
-export async function observe({ client, targetId, expectedSessionKey }) {
-  let axResult;
-  try {
-    axResult = await client.getFullAXTree();
-  } catch {
-    return unsafe('ax_unavailable');
+async function readAxTree(client) {
+  let error;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return { result: await client.getFullAXTree() };
+    } catch (caught) {
+      error = caught;
+    }
   }
+  return { error };
+}
+
+export async function observe({ client, targetId, expectedSessionKey }) {
+  const axRead = await readAxTree(client);
+  if (axRead.error) return unsafe('ax_unavailable', axRead.error);
+  const { result: axResult } = axRead;
 
   const axNodes = Array.isArray(axResult?.nodes) ? axResult.nodes : [];
   const { prompts, buttons } = findAxCandidates(axNodes);

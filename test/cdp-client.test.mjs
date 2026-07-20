@@ -309,6 +309,21 @@ test('uses the thin protocol helpers and a fresh object for the exact click func
   await Promise.all([axTree, document, box, resolved, called, clicked]);
 });
 
+test('exposes Accessibility.enable for an attached target', async () => {
+  const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
+  const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });
+  socket.open();
+
+  const enabled = client.enableAccessibility();
+
+  assert.deepEqual(socket.sent.map(({ method, params }) => ({ method, params })), [
+    { method: 'Accessibility.enable', params: undefined },
+  ]);
+  socket.respond({ id: socket.sent[0].id, result: {} });
+  await enabled;
+  client.close();
+});
+
 test('click rejects a missing resolved objectId before Runtime invocation', async () => {
   const socket = new FakeWebSocket('ws://127.0.0.1:39240/devtools/page/trae');
   const client = createCdpClient({ webSocketDebuggerUrl: socket.url, webSocketFactory: () => socket });

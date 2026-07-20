@@ -7,8 +7,8 @@ test('uses safe local defaults', () => {
   assert.deepEqual(parseArgs([]), {
     endpoint: 'http://127.0.0.1:39240',
     enable: false,
-    maxContinueClicks: 3,
-    pollMs: 1500,
+    maxContinueClicks: 7,
+    pollMs: 30000,
     once: false,
     logFile: 'logs/trae-auto-continue.jsonl',
   });
@@ -32,23 +32,23 @@ test('parses the supported flags together', () => {
   });
 });
 
-test('accepts only valid TCP ports, click limits, and non-busy poll intervals', () => {
+test('accepts positive click budgets and poll intervals without a fixed upper bound', () => {
   for (const port of [1, 65535]) {
     assert.equal(endpointFor(port), `http://127.0.0.1:${port}`);
   }
   for (const port of [0, 65536, 1.5, '39240']) {
     assert.throws(() => endpointFor(port), /Usage:/);
   }
-  for (const clicks of [1, 2, 3]) {
+  for (const clicks of [1, 2, 3, 7, 1000000]) {
     assert.equal(parseArgs(['--max-continue-clicks', String(clicks)]).maxContinueClicks, clicks);
   }
-  for (const clicks of [0, 4, 1.5, 'two']) {
+  for (const clicks of [0, -1, 1.5, 'two']) {
     assert.throws(() => parseArgs(['--max-continue-clicks', String(clicks)]), /Usage:/);
   }
-  for (const pollMs of [250, 60000]) {
+  for (const pollMs of [1, 250, 60000, 900000]) {
     assert.equal(parseArgs(['--poll-ms', String(pollMs)]).pollMs, pollMs);
   }
-  for (const pollMs of [249, 60001, 1.5, 'slow']) {
+  for (const pollMs of [0, -1, 1.5, 'slow']) {
     assert.throws(() => parseArgs(['--poll-ms', String(pollMs)]), /Usage:/);
   }
 });

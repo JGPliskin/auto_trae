@@ -69,6 +69,7 @@ function none(sessionKey = 'target-a:session-a') {
 
 function setup({ clickImpl, discoverImpl, eventImpl, observeImpl, sleepImpl } = {}) {
   const calls = {
+    accessibilityEnables: 0,
     clientCreations: 0,
     clicks: [],
     closes: 0,
@@ -80,6 +81,9 @@ function setup({ clickImpl, discoverImpl, eventImpl, observeImpl, sleepImpl } = 
     sleeps: [],
   };
   const client = {
+    async enableAccessibility() {
+      calls.accessibilityEnables += 1;
+    },
     async waitUntilOpen() {},
     async click(value) {
       calls.clicks.push(value);
@@ -123,6 +127,7 @@ test('--once performs one read-only observation even with --enable and does not 
   await runCli({ argv: ['--once', '--enable'], ...dependencies });
 
   assert.equal(calls.discoveries, 1);
+  assert.equal(calls.accessibilityEnables, 1);
   assert.equal(calls.observations, 1);
   assert.equal(calls.clicks.length, 0);
   assert.equal(calls.sleeps.length, 0);
@@ -142,13 +147,33 @@ test('default dry-run reports a candidate without invoking its click helper', as
 
   await runCli({ argv: [], signal: controller.signal, ...dependencies });
 
-  assert.deepEqual(calls.sleeps, [1500]);
+  assert.deepEqual(calls.sleeps, [30000]);
   assert.equal(calls.clicks.length, 0);
   assert.equal(calls.closes, 1);
   assert.deepEqual(calls.events.map(({ event }) => event), [
     'connection_state_changed',
     'candidate_observed',
     'would_continue',
+  ]);
+});
+
+test('foreground loop emits health heartbeats for supervisor monitoring', async () => {
+  const controller = new AbortController();
+  const heartbeats = [];
+  const context = setup({
+    sleepImpl: async () => controller.abort(),
+  });
+
+  await runCli({
+    argv: [],
+    signal: controller.signal,
+    heartbeat: (entry) => heartbeats.push(entry),
+    ...context.dependencies,
+  });
+
+  assert.deepEqual(heartbeats, [
+    { stage: 'loop' },
+    { stage: 'observation' },
   ]);
 });
 
@@ -242,6 +267,7 @@ test('an observer-level AX transport failure also replaces the client', async ()
         return {
           kind: 'unsafe',
           reason: 'ax_unavailable',
+          transportReason: 'request_timeout',
           sessionKey: undefined,
           candidateKey: undefined,
           prompt: undefined,
@@ -259,6 +285,16 @@ test('an observer-level AX transport failure also replaces the client', async ()
   assert.equal(context.calls.discoveries, 2);
   assert.deepEqual(context.calls.sleeps, [1500]);
   assert.equal(context.calls.closes, 2);
+  assert.deepEqual(
+    context.calls.events
+      .filter(({ event }) => event === 'connection_state_changed')
+      .map(({ connectionState, reason }) => [connectionState, reason]),
+    [
+      ['connected', undefined],
+      ['disconnected', 'request_timeout'],
+      ['connected', undefined],
+    ],
+  );
 });
 
 test('session click ledger survives a transport reconnect in the same watcher', async () => {
