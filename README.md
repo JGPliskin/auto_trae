@@ -19,6 +19,38 @@ development, the watcher uses deterministic local CDP observations and logs
 only redacted identifiers and events. This keeps the tool predictable while
 making Trae's more accessible GLM workflow easier to continue unattended.
 
+## Installation
+
+### Requirements
+
+- Windows with PowerShell.
+- Node.js with npm.
+- Trae Solo CN installed locally.
+
+This repository currently supports and is tested on Windows. The watcher core
+uses Node.js and local CDP, but Linux and macOS are not currently packaged or
+validated because the bundled Trae launcher uses Windows process management.
+
+Clone the repository and install the project:
+
+```powershell
+git clone https://github.com/JGPliskin/auto_trae.git
+Set-Location .\auto_trae
+npm install
+```
+
+## Test the project
+
+Run the complete automated test suite:
+
+```powershell
+npm test
+```
+
+The tests cover configuration parsing, loopback CDP discovery, AX/DOM
+candidate proof, click safety, verification, reconnect behavior, and redacted
+logging.
+
 ## Start Trae with CDP
 
 Save your work and close any normally launched Trae manually. Then start a
