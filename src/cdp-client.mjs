@@ -196,6 +196,9 @@ export function createCdpClient({
       rejectPending(new Error('CDP socket closed'));
       socket.close();
     },
+    enableAccessibility() {
+      return request('Accessibility.enable');
+    },
     getFullAXTree() {
       return request('Accessibility.getFullAXTree');
     },

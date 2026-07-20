@@ -78,6 +78,7 @@ export async function runCli({
   now = Date.now,
   logger,
   output = console.log,
+  heartbeat = () => {},
   signal,
 } = {}) {
   const config = parseArgs(argv);
@@ -118,6 +119,7 @@ export async function runCli({
   try {
     let reconnectAttempt = 0;
     while (!signal?.aborted) {
+      heartbeat({ stage: 'loop' });
       let stage = 'discovery';
       try {
         const target = await waitForAbort(
@@ -136,6 +138,8 @@ export async function runCli({
           client = createCdpClient({ webSocketDebuggerUrl: target.webSocketDebuggerUrl });
           const attachment = await waitForAbort(client.waitUntilOpen?.({ signal }), signal);
           if (attachment === ABORTED || signal?.aborted) break;
+          const accessibility = await waitForAbort(client.enableAccessibility?.(), signal);
+          if (accessibility === ABORTED || signal?.aborted) break;
           const connectedLog = await waitForAbort(
             eventLogger.event({
               event: 'connection_state_changed',
@@ -154,8 +158,14 @@ export async function runCli({
             }), signal);
             if (observation === ABORTED || signal?.aborted) break;
             await watcher.processObservation(observation);
+            heartbeat({ stage: 'observation' });
             if (observation?.kind === 'unsafe' && observation.reason === 'ax_unavailable') {
-              throw new Error('CDP connection failed');
+              const reason = observation.transportReason;
+              throw new Error(reason === 'request_timeout'
+                ? 'CDP request timeout'
+                : reason === 'socket_closed'
+                  ? 'CDP socket closed'
+                  : 'CDP connection failed');
             }
             if (config.once || signal?.aborted) break;
             await sleep(config.pollMs, { signal });
@@ -208,7 +218,18 @@ async function main() {
   const handleInterrupt = () => controller.abort();
   process.once('SIGINT', handleInterrupt);
   try {
-    await runCli({ argv, signal: controller.signal });
+    await runCli({
+      argv,
+      signal: controller.signal,
+      heartbeat: (entry) => {
+        if (typeof process.send !== 'function') return;
+        try {
+          process.send({ event: 'watcher_heartbeat', ...entry });
+        } catch {
+          // The supervisor may be shutting down at the same time as the CLI.
+        }
+      },
+    });
   } catch (error) {
     console.error(renderProcessError(error));
     process.exitCode = 1;

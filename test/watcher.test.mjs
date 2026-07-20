@@ -113,6 +113,12 @@ function setup({ mode = 'live', maxContinueClicks = 3, invokeClick } = {}) {
   return { clicks, clock, events, watcher };
 }
 
+test('accepts a click budget above the legacy three-click cap', () => {
+  const { watcher } = setup({ maxContinueClicks: 7 });
+
+  assert.equal(watcher.maxContinueClicks, 7);
+});
+
 async function invoke(watcher, observation = candidate()) {
   assert.equal(await watcher.processObservation(observation), 'waiting');
   assert.equal(await watcher.processObservation(observation), 'click_invoked');

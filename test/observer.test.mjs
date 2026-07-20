@@ -49,6 +49,40 @@ test('no AX continuation signature returns none without DOM or box requests', as
   assert.deepEqual(socket.sent.map(({ method }) => method), ['Accessibility.getFullAXTree']);
 });
 
+test('retries one transient AX read failure before returning a safe observation', async (t) => {
+  const { client, socket } = setup(t);
+  const pending = observe({ client, targetId: 'target-a' });
+
+  socket.respond({
+    id: socket.sent[0].id,
+    error: { message: 'CDP request timeout for Accessibility.getFullAXTree' },
+  });
+  await flushRequests();
+  assert.deepEqual(socket.sent.map(({ method }) => method), [
+    'Accessibility.getFullAXTree',
+    'Accessibility.getFullAXTree',
+  ]);
+
+  socket.respond({ id: socket.sent[1].id, result: { nodes: [] } });
+  assert.equal((await pending).kind, 'none');
+});
+
+test('preserves the final AX transport reason after retry exhaustion', async (t) => {
+  const { client, socket } = setup(t);
+  const pending = observe({ client, targetId: 'target-a' });
+  const failure = { error: { message: 'CDP request timeout for Accessibility.getFullAXTree' } };
+
+  socket.respond({ id: socket.sent[0].id, ...failure });
+  await flushRequests();
+  socket.respond({ id: socket.sent[1].id, ...failure });
+
+  const observation = await pending;
+  assert.deepEqual(
+    [observation.kind, observation.reason, observation.transportReason],
+    ['unsafe', 'ax_unavailable', 'request_timeout'],
+  );
+});
+
 test('verification mode proves a target-bound rendered session before returning none', async (t) => {
   const fixture = makeObservationFixture({ promptName: REDACTED_SIGNATURE_INPUT });
   const { client, socket } = setup(t);

@@ -1,6 +1,6 @@
 const DEFAULT_PORT = 39240;
-const DEFAULT_POLL_MS = 1500;
-const DEFAULT_MAX_CONTINUE_CLICKS = 3;
+const DEFAULT_POLL_MS = 30000;
+const DEFAULT_MAX_CONTINUE_CLICKS = 7;
 const DEFAULT_LOG_FILE = 'logs/trae-auto-continue.jsonl';
 
 export const usage = `Usage: node src/cli.mjs [options]
@@ -9,8 +9,8 @@ Options:
   --enable
   --once
   --port <1..65535>
-  --poll-ms <250..60000>
-  --max-continue-clicks <1..3>
+  --poll-ms <positive integer>
+  --max-continue-clicks <positive integer>
   --log-file <path>
   --help`;
 
@@ -25,6 +25,17 @@ function integerValue(value, name, minimum, maximum) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
     throw usageError(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return number;
+}
+
+function positiveInteger(value, name) {
+  if (!/^\d+$/.test(value)) {
+    throw usageError(`${name} must be a positive integer`);
+  }
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) {
+    throw usageError(`${name} must be a positive integer`);
   }
   return number;
 }
@@ -57,8 +68,8 @@ export function parseArgs(argv) {
       }
       index += 1;
       if (flag === '--port') port = integerValue(value, 'port', 1, 65535);
-      if (flag === '--poll-ms') pollMs = integerValue(value, 'poll interval', 250, 60000);
-      if (flag === '--max-continue-clicks') maxContinueClicks = integerValue(value, 'max continue clicks', 1, 3);
+      if (flag === '--poll-ms') pollMs = positiveInteger(value, 'poll interval');
+      if (flag === '--max-continue-clicks') maxContinueClicks = positiveInteger(value, 'max continue clicks');
       if (flag === '--log-file') {
         if (value.length === 0) throw usageError('log file must not be empty');
         logFile = value;
