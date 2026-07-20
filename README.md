@@ -4,6 +4,21 @@ This watcher observes a CDP-enabled Trae Work session for a narrowly verified
 continuation prompt. It is a local, user-run tool: it never launches Trae and
 does not type `继续` into the composer.
 
+## How Codex and GPT-5.6 were used
+
+This project was built with Codex and GPT-5.6. Codex helped turn the original
+problem into a small, testable design, implement the CDP observer and watcher,
+write the safety and regression tests, and validate the behavior against a real
+Trae session. GPT-5.6 was used through Codex to reason about the safety model,
+including strict localhost CDP validation, accessibility-tree and DOM proof,
+two-scan candidate confirmation, session-bound verification, click limits, and
+fail-closed manual intervention.
+
+The runtime does not call GPT-5.6 or another LLM to guess what to click. After
+development, the watcher uses deterministic local CDP observations and logs
+only redacted identifiers and events. This keeps the tool predictable while
+making Trae's more accessible GLM workflow easier to continue unattended.
+
 ## Start Trae with CDP
 
 Save your work and close any normally launched Trae manually. Then start a
